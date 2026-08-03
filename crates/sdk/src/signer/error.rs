@@ -12,6 +12,11 @@ pub enum SignerError {
     #[error(transparent)]
     Provider(#[from] ProviderError),
 
+    /// Error indicating a provider-backed operation was requested on a signer built without one.
+    #[cfg(feature = "provider")]
+    #[error("This signer was constructed without a provider")]
+    ProviderUnavailable,
+
     /// Errors encountered when attempting to inject or wrap witness fields.
     #[error(transparent)]
     WtnsInjectError(#[from] WtnsWrappingError),

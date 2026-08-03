@@ -1,4 +1,6 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+#[cfg(feature = "provider")]
+use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -6,7 +8,9 @@ use simplicityhl::Value;
 use simplicityhl::WitnessValues;
 use simplicityhl::elements::pset::PartiallySignedTransaction;
 use simplicityhl::elements::secp256k1_zkp::{All, Keypair, Message, Secp256k1, ecdsa, schnorr};
-use simplicityhl::elements::{Address, AssetId, OutPoint, Script, Transaction, Txid};
+use simplicityhl::elements::{Address, Script, Transaction};
+#[cfg(feature = "provider")]
+use simplicityhl::elements::{AssetId, OutPoint, Txid};
 use simplicityhl::simplicity::bitcoin::XOnlyPublicKey;
 use simplicityhl::simplicity::hashes::Hash;
 use simplicityhl::str::WitnessName;
@@ -31,10 +35,13 @@ use elements_miniscript::{
 use crate::constants::MIN_FEE;
 use crate::program::ProgramTrait;
 use crate::program::logger::ProgramLogger;
+#[cfg(feature = "provider")]
 use crate::provider::ProviderTrait;
 use crate::provider::SimplicityNetwork;
 use crate::signer::wtns_injector::WtnsInjector;
-use crate::transaction::{FinalTransaction, PartialInput, PartialOutput, RequiredSignature, TxReceipt, UTXO};
+use crate::transaction::{FinalTransaction, PartialOutput, RequiredSignature};
+#[cfg(feature = "provider")]
+use crate::transaction::{PartialInput, TxReceipt, UTXO};
 
 use super::error::SignerError;
 
@@ -68,10 +75,15 @@ pub trait SignerTrait {
 
 /// Core interface responsible for managing keys, interfacing with the blockchain provider,
 /// assembling descriptors, estimating fees, and finalizing/signing transactions.
+///
+/// Without the `provider` feature the signer has no blockchain access: it can assemble,
+/// blind, sign and finalize a transaction it is handed, but it cannot discover UTXOs,
+/// look up a fee rate, or broadcast. A host that owns its own networking supplies those.
 pub struct Signer {
     mnemonic: Mnemonic,
     xprv: Xpriv,
-    provider: Box<dyn ProviderTrait>,
+    #[cfg(feature = "provider")]
+    provider: Option<Box<dyn ProviderTrait>>,
     network: SimplicityNetwork,
     secp: Secp256k1<All>,
 }
@@ -123,13 +135,29 @@ enum Estimate {
 
 // TODO: refactor descriptors to be a standalone object to specify custom derivation paths.
 impl Signer {
-    /// Creates a new `Signer` instance seeded from the provided mnemonic and paired with the specified provider.
+    /// Creates a `Signer` from a mnemonic and an explicit network, with no blockchain access.
+    ///
+    /// This is the constructor a host with its own networking and its own key custody uses.
+    ///
+    /// # The mnemonic is the whole account secret
+    ///
+    /// Everything derivable from it — every key, for every purpose — lives inside this
+    /// object, not only the keys the signing path needs. That is wider than the operation
+    /// requires and is accepted deliberately rather than by oversight: signing derives from
+    /// a key at a fixed path while blinding derives from a SLIP77 master key, and an
+    /// extended private key alone does not carry the latter, so the alternatives are two
+    /// separate derived secrets or a callback interface that holds none.
+    ///
+    /// The trade-off, the two rejected alternatives, and the four conditions that would
+    /// reopen the choice are recorded under "Accepted debt: the account mnemonic crosses
+    /// into the wasm module" in the change record for this work. Narrow this before the
+    /// module gains a code path that outlives a single action, before a release intended
+    /// for people who are not us, or before a second consumer depends on it.
     ///
     /// # Panics
     /// Panics if the mnemonic fails to parse, or if deriving the master private key fails.
     #[must_use]
-    pub fn new(mnemonic: &str, provider: Box<dyn ProviderTrait>) -> Self {
-        let network = *provider.get_network();
+    pub fn from_mnemonic(mnemonic: &str, network: SimplicityNetwork) -> Self {
         let secp = Secp256k1::new();
         let mnemonic: Mnemonic = mnemonic
             .parse()
@@ -142,10 +170,34 @@ impl Signer {
         Self {
             mnemonic,
             xprv,
-            provider,
+            #[cfg(feature = "provider")]
+            provider: None,
             network,
             secp,
         }
+    }
+
+    /// Returns the configured provider, or an error when the signer was built without one.
+    #[cfg(feature = "provider")]
+    fn provider(&self) -> Result<&dyn ProviderTrait, SignerError> {
+        self.provider
+            .as_deref()
+            .ok_or(SignerError::ProviderUnavailable)
+    }
+
+    /// Creates a new `Signer` instance seeded from the provided mnemonic and paired with the specified provider.
+    ///
+    /// # Panics
+    /// Panics if the mnemonic fails to parse, or if deriving the master private key fails.
+    #[cfg(feature = "provider")]
+    #[must_use]
+    pub fn new(mnemonic: &str, provider: Box<dyn ProviderTrait>) -> Self {
+        let network = *provider.get_network();
+        let mut signer = Self::from_mnemonic(mnemonic, network);
+
+        signer.provider = Some(provider);
+
+        signer
     }
 
     /// Composes, funds, and broadcasts a standard network transaction sending the specified value of the primary policy asset.
@@ -153,6 +205,7 @@ impl Signer {
     /// # Errors
     /// Returns a `SignerError` if compiling the inputs fails, there are insufficient funds/fees, or broadcast is rejected.
     // TODO: add an ability to send arbitrary assets
+    #[cfg(feature = "provider")]
     pub fn send(&self, to: Script, amount: u64) -> Result<TxReceipt<'_>, SignerError> {
         let mut ft = FinalTransaction::new();
 
@@ -160,23 +213,25 @@ impl Signer {
 
         let (tx, _fee) = self.finalize(&ft)?;
 
-        Ok(self.provider.broadcast_transaction(&tx)?)
+        Ok(self.provider()?.broadcast_transaction(&tx)?)
     }
 
     /// Evaluates, funds, and broadcasts an already assembled `FinalTransaction`.
     ///
     /// # Errors
     /// Returns a `SignerError` if finalizing the payload fails or if the network rejects the broadcast.
+    #[cfg(feature = "provider")]
     pub fn broadcast(&self, tx: &FinalTransaction) -> Result<TxReceipt<'_>, SignerError> {
         let (tx, _fee) = self.finalize(tx)?;
 
-        Ok(self.provider.broadcast_transaction(&tx)?)
+        Ok(self.provider()?.broadcast_transaction(&tx)?)
     }
 
     /// Evaluates the input components of a `FinalTransaction`, iteratively selecting available wallet UTXOs to cover outputs and estimated fees.
     ///
     /// # Errors
     /// Returns a `SignerError` if the wallet contains insufficient funds to satisfy output values and target fee rates.
+    #[cfg(feature = "provider")]
     pub fn finalize(&self, tx: &FinalTransaction) -> Result<(Transaction, u64), SignerError> {
         let mut signer_utxos = self.get_utxos_asset(self.network.policy_asset())?;
         let mut set = HashSet::new();
@@ -195,7 +250,7 @@ impl Signer {
 
         let mut fee_tx = tx.clone();
         let mut curr_fee = MIN_FEE;
-        let fee_rate = self.provider.fetch_fee_rate(1)?;
+        let fee_rate = self.provider()?.fetch_fee_rate(1)?;
 
         for utxo in signer_utxos {
             let policy_amount_delta = fee_tx.calculate_fee_delta(&self.network);
@@ -238,15 +293,13 @@ impl Signer {
     pub fn finalize_strict(
         &self,
         tx: &FinalTransaction,
-        target_blocks: u32,
+        fee_rate: f32,
     ) -> Result<(Transaction, u64), SignerError> {
         let policy_amount_delta = tx.calculate_fee_delta(&self.network);
 
         if policy_amount_delta < MIN_FEE.cast_signed() {
             return Err(SignerError::DustAmount(policy_amount_delta));
         }
-
-        let fee_rate = self.provider.fetch_fee_rate(target_blocks)?;
 
         // policy_amount_delta will be > 0
         match self.estimate_tx(tx.clone(), fee_rate, policy_amount_delta.cast_unsigned())? {
@@ -259,9 +312,13 @@ impl Signer {
     }
 
     /// Returns a reference to the active configured network provider.
+    ///
+    /// # Panics
+    /// Panics if the signer was constructed without a provider.
+    #[cfg(feature = "provider")]
     #[must_use]
     pub fn get_provider(&self) -> &dyn ProviderTrait {
-        self.provider.as_ref()
+        self.provider().unwrap()
     }
 
     /// Returns the confidential elements address matching the local wallet logic.
@@ -306,6 +363,7 @@ impl Signer {
     ///
     /// # Errors
     /// Returns a `SignerError` if querying the network or unblinding operations fail.
+    #[cfg(feature = "provider")]
     pub fn get_utxos(&self) -> Result<Vec<UTXO>, SignerError> {
         self.get_utxos_filter(&|_| true, &|_| true)
     }
@@ -314,6 +372,7 @@ impl Signer {
     ///
     /// # Errors
     /// Returns a `SignerError` if network interaction or confidential output decryption fails.
+    #[cfg(feature = "provider")]
     pub fn get_utxos_asset(&self, asset: AssetId) -> Result<Vec<UTXO>, SignerError> {
         self.get_utxos_filter(&|utxo| utxo.asset() == asset, &|utxo| utxo.asset() == asset)
     }
@@ -323,6 +382,7 @@ impl Signer {
     /// # Errors
     /// Returns a `SignerError` if querying the network fails.
     // TODO: can this be optimized to not populate TxOuts that are filtered out?
+    #[cfg(feature = "provider")]
     pub fn get_utxos_txid(&self, txid: Txid) -> Result<Vec<UTXO>, SignerError> {
         self.get_utxos_filter(&|utxo| utxo.outpoint.txid == txid, &|utxo| utxo.outpoint.txid == txid)
     }
@@ -332,13 +392,14 @@ impl Signer {
     ///
     /// # Errors
     /// Returns a `SignerError` if retrieving remote outputs or executing confidential node unblinding throws an error.
+    #[cfg(feature = "provider")]
     pub fn get_utxos_filter(
         &self,
         explicit_filter: &dyn Fn(&UTXO) -> bool,
         confidential_filter: &dyn Fn(&UTXO) -> bool,
     ) -> Result<Vec<UTXO>, SignerError> {
         // fetch explicit and confidential utxos
-        let mut all_utxos = self.provider.fetch_address_utxos(&self.get_confidential_address())?;
+        let mut all_utxos = self.provider()?.fetch_address_utxos(&self.get_confidential_address())?;
 
         // filter out only confidential utxos and unblind them
         let mut confidential_utxos = self.unblind(
@@ -418,6 +479,7 @@ impl Signer {
         PrivateKey::new(blinding_key, self.network)
     }
 
+    #[cfg(feature = "provider")]
     fn unblind(&self, utxos: Vec<UTXO>) -> Result<Vec<UTXO>, SignerError> {
         let mut unblinded: Vec<UTXO> = Vec::new();
 

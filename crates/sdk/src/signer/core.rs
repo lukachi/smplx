@@ -39,7 +39,7 @@ use crate::program::logger::ProgramLogger;
 use crate::provider::ProviderTrait;
 use crate::provider::SimplicityNetwork;
 use crate::signer::wtns_injector::WtnsInjector;
-use crate::transaction::{FinalTransaction, PartialOutput, RequiredSignature};
+use crate::transaction::{ChangeTarget, FinalTransaction, PartialOutput, RequiredSignature};
 #[cfg(feature = "provider")]
 use crate::transaction::{PartialInput, TxReceipt, UTXO};
 
@@ -60,6 +60,7 @@ pub trait SignerTrait {
         program: &dyn ProgramTrait,
         input_index: usize,
         network: &SimplicityNetwork,
+        derivation_path: Option<&DerivationPath>,
     ) -> Result<schnorr::Signature, SignerError>;
 
     /// Generates an ECDSA signature to spend a standard transaction input.
@@ -70,6 +71,7 @@ pub trait SignerTrait {
         &self,
         pst: &PartiallySignedTransaction,
         input_index: usize,
+        derivation_path: Option<&DerivationPath>,
     ) -> Result<(PublicKey, ecdsa::Signature), SignerError>;
 }
 
@@ -95,11 +97,12 @@ impl SignerTrait for Signer {
         program: &dyn ProgramTrait,
         input_index: usize,
         network: &SimplicityNetwork,
+        derivation_path: Option<&DerivationPath>,
     ) -> Result<schnorr::Signature, SignerError> {
         let env = program.get_env(pst, input_index, network)?;
         let msg = Message::from_digest(env.c_tx_env().sighash_all().to_byte_array());
 
-        let private_key = self.get_private_key();
+        let private_key = self.get_private_key_at(derivation_path);
         let keypair = Keypair::from_secret_key(&self.secp, &private_key.inner);
 
         Ok(self.secp.sign_schnorr(&msg, &keypair))
@@ -109,6 +112,7 @@ impl SignerTrait for Signer {
         &self,
         pst: &PartiallySignedTransaction,
         input_index: usize,
+        derivation_path: Option<&DerivationPath>,
     ) -> Result<(PublicKey, ecdsa::Signature), SignerError> {
         let tx = pst.extract_tx()?;
 
@@ -119,7 +123,7 @@ impl SignerTrait for Signer {
             .sighash_msg(input_index, &mut sighash_cache, None, genesis_hash)?
             .to_secp_msg();
 
-        let private_key = self.get_private_key();
+        let private_key = self.get_private_key_at(derivation_path);
         let public_key = private_key.public_key(&self.secp);
 
         let signature = self.secp.sign_ecdsa_low_r(&message, &private_key.inner);
@@ -256,7 +260,7 @@ impl Signer {
             let policy_amount_delta = fee_tx.calculate_fee_delta(&self.network);
 
             if policy_amount_delta >= curr_fee.cast_signed() {
-                match self.estimate_tx(fee_tx.clone(), fee_rate, policy_amount_delta.cast_unsigned())? {
+                match self.estimate_tx(fee_tx.clone(), fee_rate, policy_amount_delta.cast_unsigned(), None)? {
                     Estimate::Success(tx, fee) => {
                         ProgramLogger::flush_logs();
                         return Ok((tx, fee));
@@ -272,7 +276,7 @@ impl Signer {
         let policy_amount_delta = fee_tx.calculate_fee_delta(&self.network);
 
         if policy_amount_delta >= curr_fee.cast_signed() {
-            match self.estimate_tx(fee_tx.clone(), fee_rate, policy_amount_delta.cast_unsigned())? {
+            match self.estimate_tx(fee_tx.clone(), fee_rate, policy_amount_delta.cast_unsigned(), None)? {
                 Estimate::Success(tx, fee) => {
                     ProgramLogger::flush_logs();
                     return Ok((tx, fee));
@@ -294,6 +298,7 @@ impl Signer {
         &self,
         tx: &FinalTransaction,
         fee_rate: f32,
+        change: Option<&ChangeTarget>,
     ) -> Result<(Transaction, u64), SignerError> {
         let policy_amount_delta = tx.calculate_fee_delta(&self.network);
 
@@ -302,7 +307,7 @@ impl Signer {
         }
 
         // policy_amount_delta will be > 0
-        match self.estimate_tx(tx.clone(), fee_rate, policy_amount_delta.cast_unsigned())? {
+        match self.estimate_tx(tx.clone(), fee_rate, policy_amount_delta.cast_unsigned(), change)? {
             Estimate::Success(tx, fee) => {
                 ProgramLogger::flush_logs();
                 Ok((tx, fee))
@@ -448,15 +453,35 @@ impl Signer {
     /// Panics if the master private key or derivation path cannot be derived.
     #[must_use]
     pub fn get_private_key(&self) -> PrivateKey {
+        self.get_private_key_at(None)
+    }
+
+    /// Derives the signing key at a path relative to the account path.
+    ///
+    /// `None` keeps the historical default of `0/0`. A wallet whose UTXOs sit across many
+    /// derivation indices passes the path of the input being signed; without it every
+    /// signature is made with the key at one address and the rest are unspendable.
+    ///
+    /// # Panics
+    /// Panics if the master private key or derivation path cannot be derived.
+    #[must_use]
+    pub fn get_private_key_at(&self, relative: Option<&DerivationPath>) -> PrivateKey {
         let master_xprv = self.master_xpriv().unwrap();
         let full_path = self.get_derivation_path().unwrap();
 
-        let derived = full_path.extend(
-            DerivationPath::from_str("0/0")
-                .map_err(|e| SignerError::DerivationPath(e.to_string()))
-                .unwrap(),
-        );
+        let default_path;
+        let relative = match relative {
+            Some(path) => path,
+            None => {
+                default_path = DerivationPath::from_str("0/0")
+                    .map_err(|e| SignerError::DerivationPath(e.to_string()))
+                    .unwrap();
 
+                &default_path
+            }
+        };
+
+        let derived = full_path.extend(relative);
         let ext_derived = master_xprv.derive_priv(&self.secp, &derived).unwrap();
 
         PrivateKey::new(ext_derived.private_key, self.network)
@@ -500,17 +525,25 @@ impl Signer {
         mut fee_tx: FinalTransaction,
         fee_rate: f32,
         available_delta: u64,
+        change: Option<&ChangeTarget>,
     ) -> Result<Estimate, SignerError> {
         // estimate the tx fee with the change
-        // use this wpkh address as a change script
-        fee_tx.add_output(
-            PartialOutput::new(
-                self.get_address().script_pubkey(),
-                PLACEHOLDER_FEE,
-                self.network.policy_asset(),
-            )
-            .with_blinding_key(self.get_blinding_public_key()),
-        );
+        // the caller supplies the change target; falling back to this signer's own
+        // address is only correct for a wallet that watches exactly that address
+        let change = match change {
+            Some(target) => target.clone(),
+            None => ChangeTarget::new(self.get_address().script_pubkey())
+                .with_blinding_key(self.get_blinding_public_key()),
+        };
+
+        let mut change_output =
+            PartialOutput::new(change.script_pubkey, PLACEHOLDER_FEE, self.network.policy_asset());
+
+        if let Some(blinding_key) = change.blinding_key {
+            change_output = change_output.with_blinding_key(blinding_key);
+        }
+
+        fee_tx.add_output(change_output);
 
         fee_tx.add_output(PartialOutput::new(
             Script::new(),
@@ -584,6 +617,7 @@ impl Signer {
                         witness_name,
                         sig_path,
                         index,
+                        input_i.partial_input.derivation_path.as_ref(),
                     )?),
                     // just build the witness
                     None => Ok(program_input.witness.build_witness()),
@@ -598,7 +632,8 @@ impl Signer {
             } else {
                 // we need to sign the UTXO as is
                 // TODO: do we always sign?
-                let signed_witness = self.sign_input(&pst, index)?;
+                let signed_witness =
+                    self.sign_input(&pst, index, input_i.partial_input.derivation_path.as_ref())?;
                 let raw_sig = elementssig_to_rawsig(&(signed_witness.1, EcdsaSighashType::All));
 
                 pst.inputs_mut()[index].final_script_witness = Some(vec![raw_sig, signed_witness.0.to_bytes()]);
@@ -616,8 +651,9 @@ impl Signer {
         witness_name: &str,
         sig_path: &[String],
         index: usize,
+        derivation_path: Option<&DerivationPath>,
     ) -> Result<WitnessValues, SignerError> {
-        let signature = self.sign_program(pst, program, index, &self.network)?;
+        let signature = self.sign_program(pst, program, index, &self.network, derivation_path)?;
 
         // inject the signature into the wtns name directly if the path is not provided
         let sig_val = if sig_path.is_empty() {

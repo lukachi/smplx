@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Builds the browser-loadable Simplex SDK module into crates/wasm/pkg.
+# Builds the browser-loadable Simplex SDK package into crates/wasm/pkg.
 #
-# Output mirrors what lwk_wasm produces and what a wasm-bindgen loader expects:
-# smplx_wasm_bg.wasm, smplx_wasm_bg.js, and the .d.ts files beside them.
+# Uses wasm-pack rather than wasm-bindgen directly, for three reasons: it runs
+# wasm-opt (which more than halves the module), it emits the package.json a
+# `file:` dependency needs, and it resolves a wasm-bindgen matching the crate
+# instead of requiring the host's CLI to already match.
 #
 # Usage: crates/wasm/build.sh [bundler|nodejs|web]   (default: bundler)
 
@@ -11,7 +13,6 @@ set -euo pipefail
 TARGET_KIND="${1:-bundler}"
 CRATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_DIR="$(cd "${CRATE_DIR}/../.." && pwd)"
-OUT_DIR="${CRATE_DIR}/pkg"
 
 # A wasm-capable C compiler is required. Apple's system clang has no WebAssembly
 # backend, and without this the build fails inside secp256k1-sys and simplicity-sys
@@ -33,27 +34,16 @@ if [ -z "${CC_wasm32_unknown_unknown:-}" ]; then
 	exit 1
 fi
 
-# wasm-bindgen refuses to run when the CLI and the crate disagree on the bindgen
-# schema. The crate is pinned exactly in Cargo.toml; check the CLI matches before
-# spending a full release build on it.
-CRATE_VERSION="$(grep -oE '"=?[0-9]+\.[0-9]+\.[0-9]+"' "${CRATE_DIR}/Cargo.toml" | tr -d '"=' | tail -1)"
-CLI_VERSION="$(wasm-bindgen --version 2>/dev/null | awk '{print $2}')"
-
-if [ "${CRATE_VERSION}" != "${CLI_VERSION}" ]; then
-	echo "error: wasm-bindgen CLI is ${CLI_VERSION}, the crate is pinned to ${CRATE_VERSION}." >&2
-	echo "       Run: cargo install wasm-bindgen-cli --version ${CRATE_VERSION}" >&2
+if ! command -v wasm-pack >/dev/null 2>&1; then
+	echo "error: wasm-pack is not installed." >&2
+	echo "       Install it with: cargo install wasm-pack" >&2
 	exit 1
 fi
 
 cd "${WORKSPACE_DIR}"
 
-cargo build -p smplx-wasm --release --target wasm32-unknown-unknown
-
-wasm-bindgen \
-	--target "${TARGET_KIND}" \
-	--out-dir "${OUT_DIR}" \
-	"target/wasm32-unknown-unknown/release/smplx_wasm.wasm"
+wasm-pack build crates/wasm --target "${TARGET_KIND}" --release --out-dir pkg
 
 echo
-echo "Built ${OUT_DIR} (${TARGET_KIND}):"
-ls -l "${OUT_DIR}"
+echo "Built ${CRATE_DIR}/pkg (${TARGET_KIND}):"
+ls -l "${CRATE_DIR}/pkg"

@@ -82,7 +82,7 @@ pub trait ProgramTrait: DynClone {
 /// Abstraction giving the power to execute Simplicity contracts without specifying any additional parameters.
 #[derive(Clone)]
 pub struct Program {
-    source: &'static str,
+    source: Arc<str>,
     pub_key: XOnlyPublicKey,
     arguments: Box<dyn ArgumentsTrait>,
     storage: Vec<[u8; 32]>,
@@ -198,10 +198,13 @@ impl ProgramTrait for Program {
 
 impl Program {
     /// Creates a new instance of the struct with the provided source string and arguments.
+    ///
+    /// The source is taken by value rather than as a `&'static str`, so a program whose
+    /// text arrives at runtime is as ordinary as one baked in at compile time.
     #[must_use]
-    pub fn new(source: &'static str, arguments: Box<dyn ArgumentsTrait>) -> Self {
+    pub fn new(source: impl Into<Arc<str>>, arguments: Box<dyn ArgumentsTrait>) -> Self {
         Self {
-            source,
+            source: source.into(),
             pub_key: tr_unspendable_key(),
             arguments,
             storage: Vec::new(),
@@ -285,6 +288,17 @@ impl Program {
         hash_script(&self.get_script_pubkey(network))
     }
 
+    /// Compiles the program and returns its Commitment Merkle Root.
+    ///
+    /// The CMR is what a covenant address is derived from, so recomputing it is how a
+    /// caller establishes for itself that a source is the one a deployed protocol used.
+    ///
+    /// # Errors
+    /// Returns a `ProgramError` if compilation fails.
+    pub fn get_cmr(&self) -> Result<[u8; 32], ProgramError> {
+        Ok(self.load()?.commit().cmr().to_byte_array())
+    }
+
     /// Retrieves program ABI metadata for argument types.
     ///
     /// # Errors
@@ -309,7 +323,7 @@ impl Program {
 
     fn load(&self) -> Result<CompiledProgram, ProgramError> {
         let compiled = CompiledProgram::new_with_unstable(
-            self.source,
+            Arc::clone(&self.source),
             &UnstableFeatures::all(),
             self.arguments.build_arguments(),
             GlobalConfig::get_include_debug_symbols(),

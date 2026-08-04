@@ -18,13 +18,16 @@ use smplx_sdk::provider::SimplicityNetwork;
 
 use wasm_bindgen::prelude::*;
 
-/// A program that declares no compile-time parameters.
+/// Compile-time parameters for a contract, resolved before construction.
+///
+/// Held as an already-parsed `Arguments` so a malformed set is rejected when the caller
+/// supplies it, rather than at the moment a covenant address is being derived.
 #[derive(Clone)]
-struct NoArguments;
+struct FixedArguments(Arguments);
 
-impl ArgumentsTrait for NoArguments {
+impl ArgumentsTrait for FixedArguments {
     fn build_arguments(&self) -> Arguments {
-        Arguments::default()
+        self.0.clone()
     }
 }
 
@@ -51,12 +54,29 @@ pub struct Contract {
 #[wasm_bindgen]
 impl Contract {
     /// Creates a contract from SimplicityHL source text delivered at runtime.
+    ///
+    /// `argumentsJson` carries the contract's compile-time parameters in SimplicityHL's
+    /// own `.args` shape — `{"NAME": {"value": "0x…", "type": "Pubkey"}}` — so the format
+    /// is the compiler's rather than one invented here. Pass `null` for a contract that
+    /// declares no parameters.
+    ///
+    /// Parameters participate in the covenant address, so supplying different ones for the
+    /// same source yields a different address. That is the mechanism the address check
+    /// relies on, not a caveat to it.
+    ///
+    /// # Errors
+    /// Returns an error if the arguments are not valid SimplicityHL argument JSON.
     #[wasm_bindgen(constructor)]
-    #[must_use]
-    pub fn new(source: &str) -> Self {
-        Self {
-            program: Program::new(Arc::<str>::from(source), Box::new(NoArguments)),
-        }
+    pub fn new(source: &str, arguments_json: Option<String>) -> Result<Contract, JsError> {
+        let arguments = match arguments_json.as_deref() {
+            Some(json) if !json.trim().is_empty() => serde_json::from_str::<Arguments>(json)
+                .map_err(|e| JsError::new(&format!("Invalid contract arguments: {e}")))?,
+            _ => Arguments::default(),
+        };
+
+        Ok(Self {
+            program: Program::new(Arc::<str>::from(source), Box::new(FixedArguments(arguments))),
+        })
     }
 
     /// Compiles the contract and returns its Commitment Merkle Root as lowercase hex.

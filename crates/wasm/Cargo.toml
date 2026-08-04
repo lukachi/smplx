@@ -20,3 +20,4 @@ simplicityhl = { workspace = true }
 # bindgen schema, so this must match the `wasm-bindgen` binary used to generate bindings.
 wasm-bindgen = { version = "=0.2.100" }
 hex = { workspace = true }
+serde_json = { version = "1.0" }

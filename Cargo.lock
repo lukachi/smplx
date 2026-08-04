@@ -1457,6 +1457,7 @@ name = "smplx-wasm"
 version = "0.0.9"
 dependencies = [
  "hex",
+ "serde_json",
  "simplicityhl",
  "smplx-sdk",
  "wasm-bindgen",

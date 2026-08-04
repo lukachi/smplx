@@ -16,12 +16,13 @@ use elements_miniscript::bitcoin::PublicKey;
 
 use simplicityhl::elements;
 use simplicityhl::elements::{AssetId, OutPoint, Script, TxOut, Txid};
-use simplicityhl::Arguments;
+use simplicityhl::{Arguments, WitnessValues};
 
-use smplx_sdk::program::{ArgumentsTrait, Program};
+use smplx_sdk::program::{ArgumentsTrait, Program, WitnessTrait};
 use smplx_sdk::signer::Signer;
 use smplx_sdk::transaction::{
-    ChangeTarget, FinalTransaction, PartialInput, PartialOutput, RequiredSignature, UTXO,
+    ChangeTarget, FinalTransaction, PartialInput, PartialOutput, ProgramInput, RequiredSignature,
+    UTXO,
 };
 use smplx_sdk::provider::SimplicityNetwork;
 
@@ -100,6 +101,22 @@ impl Contract {
             .map_err(|e| JsError::new(&e.to_string()))?;
 
         Ok(hex::encode(cmr))
+    }
+
+    /// Compiles the contract and returns the scriptPubKey its funds sit behind, as hex.
+    ///
+    /// The address is for showing a person; this is for comparing against an output and for
+    /// building one, which is what the wallet actually does with it.
+    ///
+    /// # Errors
+    /// Returns an error if the network name is unknown or the source fails to compile.
+    #[wasm_bindgen(js_name = scriptPubKeyHex)]
+    pub fn script_pubkey_hex(&self, network: &str) -> Result<String, JsError> {
+        let network = network_from_str(network)?;
+
+        Ok(hex::encode(
+            self.program.get_script_pubkey(&network).as_bytes(),
+        ))
     }
 
     /// Compiles the contract and returns the taproot address its funds would sit at.
@@ -242,6 +259,19 @@ impl WalletSigner {
 }
 
 
+/// Witness values for a covenant input, resolved before the transaction is assembled.
+///
+/// Held as parsed `WitnessValues` so a malformed set is rejected when the caller supplies
+/// it rather than in the middle of signing.
+#[derive(Clone)]
+struct FixedWitness(WitnessValues);
+
+impl WitnessTrait for FixedWitness {
+    fn build_witness(&self) -> WitnessValues {
+        self.0.clone()
+    }
+}
+
 /// A transaction under construction.
 ///
 /// Inputs cross as an outpoint plus the raw `TxOut` they spend; nothing secret crosses
@@ -332,6 +362,102 @@ impl TransactionBuilder {
         }
 
         self.transaction.add_output(output);
+
+        Ok(())
+    }
+
+    /// Adds a covenant input: an output locked by a Simplicity program, spent by satisfying it.
+    ///
+    /// `witness_json` carries the witness values in SimplicityHL's own `.wit` shape. Passing
+    /// `null` leaves them unset, which is what a pre-approval dry-run wants: unsupplied
+    /// witnesses are zero-filled and pruned, so the program's shape can be checked without
+    /// producing a signature before anyone has agreed to one.
+    ///
+    /// # Errors
+    /// Returns an error if the txid, the encoded output, the arguments or the witness cannot
+    /// be parsed.
+    #[wasm_bindgen(js_name = addCovenantInput)]
+    pub fn add_covenant_input(
+        &mut self,
+        txid: &str,
+        vout: u32,
+        tx_out_hex: &str,
+        source: &str,
+        arguments_json: Option<String>,
+        witness_json: Option<String>,
+    ) -> Result<(), JsError> {
+        let outpoint = OutPoint {
+            txid: Txid::from_str(txid).map_err(|e| JsError::new(&format!("Invalid txid: {e}")))?,
+            vout,
+        };
+
+        let bytes = hex::decode(tx_out_hex)
+            .map_err(|e| JsError::new(&format!("Invalid output encoding: {e}")))?;
+        let txout: TxOut = elements::encode::deserialize(&bytes)
+            .map_err(|e| JsError::new(&format!("Invalid output: {e}")))?;
+
+        let arguments = match arguments_json.as_deref() {
+            Some(json) if !json.trim().is_empty() => serde_json::from_str::<Arguments>(json)
+                .map_err(|e| JsError::new(&format!("Invalid contract arguments: {e}")))?,
+            _ => Arguments::default(),
+        };
+
+        let witness = match witness_json.as_deref() {
+            Some(json) if !json.trim().is_empty() => serde_json::from_str::<WitnessValues>(json)
+                .map_err(|e| JsError::new(&format!("Invalid witness values: {e}")))?,
+            _ => WitnessValues::default(),
+        };
+
+        let program = Program::new(Arc::<str>::from(source), Box::new(FixedArguments(arguments)));
+
+        self.transaction.add_program_input(
+            PartialInput::new(UTXO {
+                outpoint,
+                secrets: None,
+                txout,
+            }),
+            ProgramInput {
+                program: Box::new(program),
+                witness: Box::new(FixedWitness(witness)),
+            },
+            RequiredSignature::None,
+        );
+
+        Ok(())
+    }
+
+    /// Runs the Simplicity program of one covenant input against this transaction.
+    ///
+    /// This is the dry-run: it satisfies the witness, prunes the branches the spend does not
+    /// take, and executes the result on a BitMachine. It proves the program runs against
+    /// *this* transaction — not that a signature the caller has not made yet will satisfy it,
+    /// which is a different claim and needs a second run after signing.
+    ///
+    /// # Errors
+    /// Returns an error if the input is not a covenant input, or if the program fails to
+    /// satisfy, prune or execute.
+    #[wasm_bindgen(js_name = dryRunCovenantInput)]
+    pub fn dry_run_covenant_input(&self, input_index: usize, network: &str) -> Result<(), JsError> {
+        let network = network_from_str(network)?;
+        let inputs = self.transaction.inputs();
+        let input = inputs
+            .get(input_index)
+            .ok_or_else(|| JsError::new(&format!("There is no input at index {input_index}.")))?;
+        let program_input = input.program_input.as_ref().ok_or_else(|| {
+            JsError::new(&format!("Input {input_index} is not a covenant input."))
+        })?;
+
+        let (pst, _secrets) = self.transaction.extract_pst();
+
+        program_input
+            .program
+            .execute(
+                &pst,
+                &program_input.witness.build_witness(),
+                input_index,
+                &network,
+            )
+            .map_err(|e| JsError::new(&format!("Input {input_index} did not execute: {e}")))?;
 
         Ok(())
     }

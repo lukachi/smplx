@@ -88,6 +88,7 @@ impl Contract {
         source: &str,
         arguments_json: Option<String>,
         extra_leaves_json: Option<String>,
+        include_debug_symbols: Option<bool>,
     ) -> Result<Contract, JsError> {
         let arguments = match arguments_json.as_deref() {
             Some(json) if !json.trim().is_empty() => serde_json::from_str::<Arguments>(json)
@@ -97,6 +98,10 @@ impl Contract {
 
         let mut program =
             Program::new(Arc::<str>::from(source), Box::new(FixedArguments(arguments)));
+
+        if let Some(include) = include_debug_symbols {
+            program = program.with_debug_symbols(include);
+        }
 
         if let Some(json) = extra_leaves_json.as_deref().filter(|json| !json.trim().is_empty()) {
             let leaves: Vec<String> = serde_json::from_str(json)
@@ -563,4 +568,16 @@ impl SignedTransaction {
 #[must_use]
 pub fn sdk_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
+}
+
+/// The SimplicityHL compiler version compiled into this module.
+///
+/// Read from the dependency at build time rather than written down, because a wallet that
+/// refuses a manifest asking for another version has to be right about which one it has.
+/// A constant maintained by hand would drift from the compiler on the first upgrade, and
+/// the failure would be a refusal of a manifest that should have built.
+#[wasm_bindgen(js_name = compilerVersion)]
+#[must_use]
+pub fn compiler_version() -> String {
+    smplx_sdk::COMPILER_VERSION.to_string()
 }

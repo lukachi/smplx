@@ -85,6 +85,13 @@ pub struct Program {
     pub_key: XOnlyPublicKey,
     arguments: Box<dyn ArgumentsTrait>,
     storage: Vec<Vec<u8>>,
+    /// Whether this program compiles with debug symbols, which changes its CMR.
+    ///
+    /// Per program rather than per process: a protocol declares the mode its contracts were
+    /// built in, and the wallet has to build each one the way its own protocol states or the
+    /// address it derives is not the address the funds sit at. A process-wide setting cannot
+    /// express that when one transaction touches two protocols.
+    include_debug_symbols: Option<bool>,
 }
 
 dyn_clone::clone_trait_object!(ProgramTrait);
@@ -207,6 +214,7 @@ impl Program {
             pub_key: tr_unspendable_key(),
             arguments,
             storage: Vec::new(),
+            include_debug_symbols: None,
         }
     }
 
@@ -215,6 +223,19 @@ impl Program {
     #[must_use]
     pub fn with_taproot_pubkey(mut self, pub_key: XOnlyPublicKey) -> Self {
         self.pub_key = pub_key;
+
+        self
+    }
+
+    /// Builds this program in the mode its protocol declares, rather than the process's.
+    ///
+    /// The flag is not cosmetic: it wraps tracked expressions in extra Simplicity nodes, so
+    /// it changes the CMR and therefore the covenant address. Leaving it unset falls back to
+    /// the process-wide configuration, which is what a caller with no declaration to follow
+    /// should do.
+    #[must_use]
+    pub fn with_debug_symbols(mut self, include: bool) -> Self {
+        self.include_debug_symbols = Some(include);
 
         self
     }
@@ -325,7 +346,7 @@ impl Program {
             Arc::clone(&self.source),
             &UnstableFeatures::all(),
             self.arguments.build_arguments(),
-            GlobalConfig::get_include_debug_symbols(),
+            self.include_debug_symbols.unwrap_or_else(GlobalConfig::get_include_debug_symbols),
             Box::new(ElementsJetHinter),
         )
         .map_err(ProgramError::Compilation)?;

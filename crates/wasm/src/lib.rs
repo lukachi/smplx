@@ -20,7 +20,9 @@ use simplicityhl::Arguments;
 
 use smplx_sdk::program::{ArgumentsTrait, Program};
 use smplx_sdk::signer::Signer;
-use smplx_sdk::transaction::{FinalTransaction, PartialInput, PartialOutput, RequiredSignature, UTXO};
+use smplx_sdk::transaction::{
+    ChangeTarget, FinalTransaction, PartialInput, PartialOutput, RequiredSignature, UTXO,
+};
 use smplx_sdk::provider::SimplicityNetwork;
 
 use wasm_bindgen::prelude::*;
@@ -178,11 +180,64 @@ impl WalletSigner {
         hex::encode(self.signer.get_schnorr_public_key().serialize())
     }
 
+    /// The scriptPubKey of the signer's own address, as lowercase hex.
+    ///
+    /// This is what a wallet output pays to, so it is what the caller encodes into the
+    /// `TxOut` of an input it wants signed, and what it passes as the change script.
+    #[wasm_bindgen(js_name = scriptPubKeyHex)]
+    #[must_use]
+    pub fn script_pubkey_hex(&self) -> String {
+        hex::encode(self.signer.get_address().script_pubkey().as_bytes())
+    }
+
     /// The blinding public key, as lowercase hex.
     #[wasm_bindgen(js_name = blindingPublicKey)]
     #[must_use]
     pub fn blinding_public_key(&self) -> String {
         hex::encode(self.signer.get_blinding_public_key().to_bytes())
+    }
+
+    /// Blinds, signs and finalises an assembled transaction.
+    ///
+    /// The fee rate and the change target are supplied rather than discovered: the module
+    /// has no network, and change must go to an address the wallet actually watches. Coin
+    /// selection is assumed done — this adds the change and fee outputs and nothing else.
+    ///
+    /// # Errors
+    /// Returns an error if the change target cannot be parsed, or if the transaction
+    /// cannot be balanced, blinded, signed or finalised.
+    #[wasm_bindgen(js_name = finalizeTransaction)]
+    pub fn finalize_transaction(
+        &self,
+        builder: &TransactionBuilder,
+        fee_rate: f32,
+        change_script_pubkey_hex: &str,
+        change_blinding_key_hex: Option<String>,
+    ) -> Result<SignedTransaction, JsError> {
+        let script = Script::from(
+            hex::decode(change_script_pubkey_hex)
+                .map_err(|e| JsError::new(&format!("Invalid change script: {e}")))?,
+        );
+
+        let mut change = ChangeTarget::new(script);
+
+        if let Some(blinding_key) = change_blinding_key_hex.as_deref() {
+            let key = PublicKey::from_str(blinding_key)
+                .map_err(|e| JsError::new(&format!("Invalid change blinding key: {e}")))?;
+
+            change = change.with_blinding_key(key);
+        }
+
+        let (transaction, fee_sats) = self
+            .signer
+            .finalize_strict(builder.inner(), fee_rate, Some(&change))
+            .map_err(|e| JsError::new(&format!("Could not finalise the transaction: {e}")))?;
+
+        Ok(SignedTransaction {
+            fee_sats,
+            hex: elements::encode::serialize_hex(&transaction),
+            txid: transaction.txid().to_string(),
+        })
     }
 }
 
@@ -296,9 +351,48 @@ impl TransactionBuilder {
     }
 }
 
+impl TransactionBuilder {
+    /// The assembled transaction, for the signer in this crate.
+    fn inner(&self) -> &FinalTransaction {
+        &self.transaction
+    }
+}
+
 impl Default for TransactionBuilder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// A finished transaction and the fee it pays.
+#[wasm_bindgen]
+pub struct SignedTransaction {
+    fee_sats: u64,
+    hex: String,
+    txid: String,
+}
+
+#[wasm_bindgen]
+impl SignedTransaction {
+    /// The consensus-encoded transaction, ready to broadcast.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn hex(&self) -> String {
+        self.hex.clone()
+    }
+
+    /// The transaction id it will have once broadcast.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn txid(&self) -> String {
+        self.txid.clone()
+    }
+
+    /// The fee it pays, in satoshis.
+    #[wasm_bindgen(getter, js_name = feeSats)]
+    #[must_use]
+    pub fn fee_sats(&self) -> u64 {
+        self.fee_sats
     }
 }
 

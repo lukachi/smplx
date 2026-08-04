@@ -373,6 +373,12 @@ impl TransactionBuilder {
     /// witnesses are zero-filled and pruned, so the program's shape can be checked without
     /// producing a signature before anyone has agreed to one.
     ///
+    /// `signature_witness` names the witness the signer must fill with a Schnorr signature
+    /// over this transaction. Most covenants authenticate whoever spends them, and a witness
+    /// the caller cannot produce in advance is exactly the one the signer exists to make;
+    /// leaving this `null` says the program needs no signature, which is true of very few
+    /// real covenants and was previously the only thing this could say.
+    ///
     /// # Errors
     /// Returns an error if the txid, the encoded output, the arguments or the witness cannot
     /// be parsed.
@@ -385,6 +391,7 @@ impl TransactionBuilder {
         source: &str,
         arguments_json: Option<String>,
         witness_json: Option<String>,
+        signature_witness: Option<String>,
     ) -> Result<(), JsError> {
         let outpoint = OutPoint {
             txid: Txid::from_str(txid).map_err(|e| JsError::new(&format!("Invalid txid: {e}")))?,
@@ -420,7 +427,10 @@ impl TransactionBuilder {
                 program: Box::new(program),
                 witness: Box::new(FixedWitness(witness)),
             },
-            RequiredSignature::None,
+            match signature_witness {
+                Some(name) if !name.trim().is_empty() => RequiredSignature::Witness(name),
+                _ => RequiredSignature::None,
+            },
         );
 
         Ok(())

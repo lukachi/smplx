@@ -74,19 +74,45 @@ impl Contract {
     /// same source yields a different address. That is the mechanism the address check
     /// relies on, not a caveat to it.
     ///
+    /// `extraLeavesJson` is a JSON array of hex strings, each an already-encoded taproot
+    /// leaf payload appended to the tree in declaration order. They are payloads rather than
+    /// programs and are added as hidden nodes, and their bytes are as much a part of the
+    /// address as the parameters are — which is why they arrive encoded rather than as values
+    /// this module would have to guess a representation for.
+    ///
     /// # Errors
-    /// Returns an error if the arguments are not valid SimplicityHL argument JSON.
+    /// Returns an error if the arguments are not valid SimplicityHL argument JSON, or if the
+    /// extra leaves are not a JSON array of hex strings.
     #[wasm_bindgen(constructor)]
-    pub fn new(source: &str, arguments_json: Option<String>) -> Result<Contract, JsError> {
+    pub fn new(
+        source: &str,
+        arguments_json: Option<String>,
+        extra_leaves_json: Option<String>,
+    ) -> Result<Contract, JsError> {
         let arguments = match arguments_json.as_deref() {
             Some(json) if !json.trim().is_empty() => serde_json::from_str::<Arguments>(json)
                 .map_err(|e| JsError::new(&format!("Invalid contract arguments: {e}")))?,
             _ => Arguments::default(),
         };
 
-        Ok(Self {
-            program: Program::new(Arc::<str>::from(source), Box::new(FixedArguments(arguments))),
-        })
+        let mut program =
+            Program::new(Arc::<str>::from(source), Box::new(FixedArguments(arguments)));
+
+        if let Some(json) = extra_leaves_json.as_deref().filter(|json| !json.trim().is_empty()) {
+            let leaves: Vec<String> = serde_json::from_str(json)
+                .map_err(|e| JsError::new(&format!("Invalid extra leaves: {e}")))?;
+
+            program = program.with_storage_capacity(leaves.len());
+
+            for (index, leaf) in leaves.iter().enumerate() {
+                let bytes = hex::decode(leaf.strip_prefix("0x").unwrap_or(leaf))
+                    .map_err(|e| JsError::new(&format!("Extra leaf {index} is not hex: {e}")))?;
+
+                program.set_storage_at(index, bytes);
+            }
+        }
+
+        Ok(Self { program })
     }
 
     /// Compiles the contract and returns its Commitment Merkle Root as lowercase hex.

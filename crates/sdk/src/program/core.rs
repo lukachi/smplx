@@ -1,4 +1,3 @@
-use std::iter;
 use std::sync::Arc;
 
 use dyn_clone::DynClone;
@@ -85,7 +84,7 @@ pub struct Program {
     source: Arc<str>,
     pub_key: XOnlyPublicKey,
     arguments: Box<dyn ArgumentsTrait>,
-    storage: Vec<[u8; 32]>,
+    storage: Vec<Vec<u8>>,
 }
 
 dyn_clone::clone_trait_object!(ProgramTrait);
@@ -223,7 +222,7 @@ impl Program {
     /// Sets storage capacity for further usage.
     #[must_use]
     pub fn with_storage_capacity(mut self, capacity: usize) -> Self {
-        self.storage = vec![[0u8; 32]; capacity];
+        self.storage = vec![vec![0u8; 32]; capacity];
 
         self
     }
@@ -232,10 +231,10 @@ impl Program {
     ///
     /// # Panics
     /// Panics if the `index` is out of bounds for the initiasized storage.
-    pub fn set_storage_at(&mut self, index: usize, new_value: [u8; 32]) {
+    pub fn set_storage_at(&mut self, index: usize, new_value: impl Into<Vec<u8>>) {
         let slot = self.storage.get_mut(index).expect("Index out of bounds");
 
-        *slot = new_value;
+        *slot = new_value.into();
     }
 
     /// Returns the number of storage chunks for a program.
@@ -246,7 +245,7 @@ impl Program {
 
     /// Returns storage as a whole array of 32-byte chunks.
     #[must_use]
-    pub fn get_storage(&self) -> &[[u8; 32]] {
+    pub fn get_storage(&self) -> &[Vec<u8>] {
         &self.storage
     }
 
@@ -255,8 +254,8 @@ impl Program {
     /// # Panics
     /// Panics if the `index` is out of bounds for the initiated storage.
     #[must_use]
-    pub fn get_storage_at(&self, index: usize) -> [u8; 32] {
-        self.storage[index]
+    pub fn get_storage_at(&self, index: usize) -> Vec<u8> {
+        self.storage[index].clone()
     }
 
     /// Returns a taproot address for a defined `SimplicityNetwork`.
@@ -341,21 +340,24 @@ impl Program {
         Ok((script, leaf_version()))
     }
 
+    /// Depths of a left-folded tap tree, in the order `TaprootBuilder` wants them.
+    ///
+    /// The tree is `tapbranch(tapbranch(tapbranch(cmr, e1), e2), e3)`: the program's own leaf
+    /// and the first extra leaf sit deepest, and each further leaf is one level shallower.
+    ///
+    /// This was a balanced tree, which is what upstream builds and what nobody deploys. The
+    /// reference implementation folds left, and every covenant address in existence was
+    /// derived by it — so a balanced tree produces a well-formed address for a contract whose
+    /// funds sit somewhere else. The two agree up to three leaves and diverge from four, which
+    /// is why nothing noticed until a protocol carried three extra leaves.
     fn taproot_leaf_depths(total_leaves: usize) -> Vec<usize> {
         assert!(total_leaves > 0, "Taproot tree must contain at least one leaf");
 
-        let next_pow2 = total_leaves.next_power_of_two();
-        let depth = next_pow2.ilog2() as usize;
-
-        let shallow_count = next_pow2 - total_leaves;
-        let deep_count = total_leaves - shallow_count;
-
+        let extra = total_leaves - 1;
         let mut depths = Vec::with_capacity(total_leaves);
-        depths.extend(iter::repeat_n(depth, deep_count));
 
-        if depth > 0 {
-            depths.extend(iter::repeat_n(depth - 1, shallow_count));
-        }
+        depths.push(extra);
+        depths.extend((1..=extra).rev());
 
         depths
     }
@@ -385,6 +387,32 @@ impl Program {
         let script_ver = self.script_version()?;
 
         Ok(info.control_block(&script_ver).expect("control block should exist"))
+    }
+}
+
+#[cfg(test)]
+mod depth_tests {
+    use super::*;
+
+    // The reference implementation folds the tap tree left, and every deployed covenant
+    // address was derived that way. These are the depths a left fold needs, in the order
+    // TaprootBuilder consumes them: the program's leaf and the first extra sit deepest, and
+    // each further extra leaf is one level shallower.
+    #[test]
+    fn left_folded_depths() {
+        assert_eq!(Program::taproot_leaf_depths(1), vec![0]);
+        assert_eq!(Program::taproot_leaf_depths(2), vec![1, 1]);
+        assert_eq!(Program::taproot_leaf_depths(3), vec![2, 2, 1]);
+        assert_eq!(Program::taproot_leaf_depths(4), vec![3, 3, 2, 1]);
+        assert_eq!(Program::taproot_leaf_depths(5), vec![4, 4, 3, 2, 1]);
+    }
+
+    // The measured boundary: a balanced tree agrees with a left fold up to three leaves and
+    // diverges from four. Four leaves balanced is [2, 2, 2, 2]; left-folded it is not.
+    #[test]
+    fn diverges_from_a_balanced_tree_at_four_leaves() {
+        assert_eq!(Program::taproot_leaf_depths(3), vec![2, 2, 1]);
+        assert_ne!(Program::taproot_leaf_depths(4), vec![2, 2, 2, 2]);
     }
 }
 

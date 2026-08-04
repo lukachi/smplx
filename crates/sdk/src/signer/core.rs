@@ -623,10 +623,14 @@ impl Signer {
                     None => Ok(program_input.witness.build_witness()),
                 };
 
-                let pruned_witness =
-                    program_input
-                        .program
-                        .finalize(&pst, &signed_witness.unwrap(), index, &self.network)?;
+                // `finalize` executes the program — satisfy, prune, BitMachine — so this is
+                // also the dry-run, performed against the witness actually produced. Its
+                // failure is attributed to the input it happened on, because a caller with
+                // several covenant inputs cannot act on "something did not execute".
+                let pruned_witness = program_input
+                    .program
+                    .finalize(&pst, &signed_witness.unwrap(), index, &self.network)
+                    .map_err(|source| SignerError::CovenantExecution { index, source })?;
 
                 pst.inputs_mut()[index].final_script_witness = Some(pruned_witness);
             } else {

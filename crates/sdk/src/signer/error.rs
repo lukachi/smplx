@@ -8,6 +8,18 @@ pub enum SignerError {
     #[error(transparent)]
     Program(#[from] ProgramError),
 
+    /// A covenant input's Simplicity program failed to satisfy, prune or execute.
+    ///
+    /// Distinct from `Program` because the input index is what makes this actionable: the
+    /// caller has several inputs and needs to know which one the transaction died on.
+    #[error("Covenant input {index} did not execute: {source}")]
+    CovenantExecution {
+        /// The index of the input whose program failed.
+        index: usize,
+        /// The underlying program failure.
+        source: ProgramError,
+    },
+
     /// Errors originating from provider network interactions.
     #[error(transparent)]
     Provider(#[from] ProviderError),

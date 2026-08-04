@@ -21,7 +21,26 @@ if [ -z "${CC_wasm32_unknown_unknown:-}" ]; then
 	for candidate in /opt/homebrew/opt/llvm/bin/clang /usr/local/opt/llvm/bin/clang /usr/bin/clang; do
 		if [ -x "${candidate}" ] && "${candidate}" -print-targets 2>/dev/null | grep -q wasm32; then
 			export CC_wasm32_unknown_unknown="${candidate}"
-			export AR_wasm32_unknown_unknown="$(dirname "${candidate}")/llvm-ar"
+			# Beside the compiler on a Homebrew install; on a distribution it is usually
+			# versioned — llvm-ar-18 and so on — with no unversioned name, so PATH and then a
+			# versioned match are tried rather than assuming the neighbour exists.
+			candidate_ar="$(dirname "${candidate}")/llvm-ar"
+
+			if [ ! -x "${candidate_ar}" ]; then
+				candidate_ar="$(command -v llvm-ar || true)"
+			fi
+
+			if [ -z "${candidate_ar}" ]; then
+				candidate_ar="$(ls -1 "$(dirname "${candidate}")"/llvm-ar-* 2>/dev/null | sort -V | tail -1 || true)"
+			fi
+
+			if [ -z "${candidate_ar}" ]; then
+				echo "error: found ${candidate} but no llvm-ar beside it or on PATH." >&2
+				echo "       Install LLVM's binutils, or set AR_wasm32_unknown_unknown yourself." >&2
+				exit 1
+			fi
+
+			export AR_wasm32_unknown_unknown="${candidate_ar}"
 			break
 		fi
 	done

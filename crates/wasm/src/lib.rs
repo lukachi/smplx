@@ -14,6 +14,7 @@ use std::sync::Arc;
 use simplicityhl::Arguments;
 
 use smplx_sdk::program::{ArgumentsTrait, Program};
+use smplx_sdk::signer::Signer;
 use smplx_sdk::provider::SimplicityNetwork;
 
 use wasm_bindgen::prelude::*;
@@ -102,6 +103,80 @@ impl Contract {
         let network = network_from_str(network)?;
 
         Ok(self.program.get_tr_address(&network).to_string())
+    }
+}
+
+/// The wallet's signing key material, inside the module.
+///
+/// # This holds the whole account secret
+///
+/// It is constructed from an account mnemonic, so every key derivable from that account
+/// lives here for as long as the object does — wider than any single action needs. That
+/// is accepted debt, not an oversight: signing derives from a key at a fixed path while
+/// blinding derives from a SLIP77 master key that an extended private key does not carry,
+/// so the alternatives are two separate derived secrets or a callback interface holding
+/// none of them.
+///
+/// The cost, the two rejected alternatives, and the conditions that should reopen the
+/// choice are recorded under "Accepted debt: the account mnemonic crosses into the wasm
+/// module" in the change record for this work. Narrow it before this module gains a code
+/// path outliving a single action, before a release intended for people who are not us,
+/// or before a second consumer depends on it.
+///
+/// Call `free()` when the action is done rather than letting it sit in the wasm heap.
+#[wasm_bindgen]
+pub struct WalletSigner {
+    signer: Signer,
+    network: SimplicityNetwork,
+}
+
+#[wasm_bindgen]
+impl WalletSigner {
+    /// Creates a signer from an account mnemonic.
+    ///
+    /// # Errors
+    /// Returns an error if the network name is unknown.
+    #[wasm_bindgen(constructor)]
+    pub fn new(mnemonic: &str, network: &str) -> Result<WalletSigner, JsError> {
+        let network = network_from_str(network)?;
+
+        Ok(Self {
+            signer: Signer::from_mnemonic(mnemonic, network),
+            network,
+        })
+    }
+
+    /// The unblinded address of the signer's own key.
+    #[wasm_bindgen(js_name = address)]
+    #[must_use]
+    pub fn address(&self) -> String {
+        let _ = &self.network;
+
+        self.signer.get_address().to_string()
+    }
+
+    /// The confidential address of the signer's own key.
+    #[wasm_bindgen(js_name = confidentialAddress)]
+    #[must_use]
+    pub fn confidential_address(&self) -> String {
+        self.signer.get_confidential_address().to_string()
+    }
+
+    /// The x-only public key used for Schnorr and taproot, as lowercase hex.
+    ///
+    /// This is what a covenant locking to "the wallet's key" is parameterised with, so it
+    /// is the value that goes into a manifest parameter naming the signer.
+    #[wasm_bindgen(js_name = schnorrPublicKey)]
+    #[must_use]
+    pub fn schnorr_public_key(&self) -> String {
+        hex::encode(self.signer.get_schnorr_public_key().serialize())
+    }
+
+    /// The blinding public key, as lowercase hex.
+    #[wasm_bindgen(js_name = blindingPublicKey)]
+    #[must_use]
+    pub fn blinding_public_key(&self) -> String {
+        hex::encode(self.signer.get_blinding_public_key().to_bytes())
     }
 }
 

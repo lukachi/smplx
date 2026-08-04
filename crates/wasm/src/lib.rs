@@ -15,7 +15,7 @@ use std::sync::Arc;
 use elements_miniscript::bitcoin::PublicKey;
 
 use simplicityhl::elements;
-use simplicityhl::elements::{AssetId, OutPoint, Script, TxOut, Txid};
+use simplicityhl::elements::{AssetId, OutPoint, Script, Sequence, TxOut, Txid};
 use simplicityhl::{Arguments, WitnessValues};
 
 use smplx_sdk::program::{ArgumentsTrait, Program, WitnessTrait};
@@ -290,6 +290,19 @@ impl WalletSigner {
 }
 
 
+/// Applies a manifest's declared sequence to an input, when it declared one.
+///
+/// A sequence is a relative timelock: it says how long after the output it spends was
+/// confirmed this transaction may enter a block. A covenant can require one, and a
+/// transaction built without it is rejected by the chain rather than by anything here, so
+/// dropping the declaration silently would fail late and unexplainably.
+fn with_sequence(input: PartialInput, sequence: Option<u32>) -> PartialInput {
+    match sequence {
+        Some(value) => input.with_sequence(Sequence(value)),
+        None => input,
+    }
+}
+
 /// Witness values for a covenant input, resolved before the transaction is assembled.
 ///
 /// Held as parsed `WitnessValues` so a malformed set is rejected when the caller supplies
@@ -337,7 +350,13 @@ impl TransactionBuilder {
     /// # Errors
     /// Returns an error if the txid or the encoded output cannot be parsed.
     #[wasm_bindgen(js_name = addWalletInput)]
-    pub fn add_wallet_input(&mut self, txid: &str, vout: u32, tx_out_hex: &str) -> Result<(), JsError> {
+    pub fn add_wallet_input(
+        &mut self,
+        txid: &str,
+        vout: u32,
+        tx_out_hex: &str,
+        sequence: Option<u32>,
+    ) -> Result<(), JsError> {
         let outpoint = OutPoint {
             txid: Txid::from_str(txid).map_err(|e| JsError::new(&format!("Invalid txid: {e}")))?,
             vout,
@@ -349,11 +368,14 @@ impl TransactionBuilder {
             .map_err(|e| JsError::new(&format!("Invalid output: {e}")))?;
 
         self.transaction.add_input(
-            PartialInput::new(UTXO {
-                outpoint,
-                secrets: None,
-                txout,
-            }),
+            with_sequence(
+                PartialInput::new(UTXO {
+                    outpoint,
+                    secrets: None,
+                    txout,
+                }),
+                sequence,
+            ),
             RequiredSignature::NativeEcdsa,
         );
 
@@ -423,6 +445,7 @@ impl TransactionBuilder {
         arguments_json: Option<String>,
         witness_json: Option<String>,
         signature_witness: Option<String>,
+        sequence: Option<u32>,
     ) -> Result<(), JsError> {
         let outpoint = OutPoint {
             txid: Txid::from_str(txid).map_err(|e| JsError::new(&format!("Invalid txid: {e}")))?,
@@ -449,11 +472,14 @@ impl TransactionBuilder {
         let program = Program::new(Arc::<str>::from(source), Box::new(FixedArguments(arguments)));
 
         self.transaction.add_program_input(
-            PartialInput::new(UTXO {
-                outpoint,
-                secrets: None,
-                txout,
-            }),
+            with_sequence(
+                PartialInput::new(UTXO {
+                    outpoint,
+                    secrets: None,
+                    txout,
+                }),
+                sequence,
+            ),
             ProgramInput {
                 program: Box::new(program),
                 witness: Box::new(FixedWitness(witness)),

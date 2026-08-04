@@ -9,12 +9,18 @@
 //! here is enough to establish that the module loads, that compilation runs inside the
 //! browser, and that a value derived from a compiled contract crosses the boundary.
 
+use std::str::FromStr;
 use std::sync::Arc;
 
+use elements_miniscript::bitcoin::PublicKey;
+
+use simplicityhl::elements;
+use simplicityhl::elements::{AssetId, OutPoint, Script, TxOut, Txid};
 use simplicityhl::Arguments;
 
 use smplx_sdk::program::{ArgumentsTrait, Program};
 use smplx_sdk::signer::Signer;
+use smplx_sdk::transaction::{FinalTransaction, PartialInput, PartialOutput, RequiredSignature, UTXO};
 use smplx_sdk::provider::SimplicityNetwork;
 
 use wasm_bindgen::prelude::*;
@@ -177,6 +183,122 @@ impl WalletSigner {
     #[must_use]
     pub fn blinding_public_key(&self) -> String {
         hex::encode(self.signer.get_blinding_public_key().to_bytes())
+    }
+}
+
+
+/// A transaction under construction.
+///
+/// Inputs cross as an outpoint plus the raw `TxOut` they spend; nothing secret crosses
+/// per input, because the signer already holds the SLIP77 material that unblinds the
+/// wallet's own confidential outputs.
+///
+/// Coin selection is the caller's — this assembles exactly what it is given and adds only
+/// the change and fee outputs. That is deliberate: the wallet knows which of its outputs
+/// it is willing to spend, and a module that selected for it would be choosing on its
+/// behalf.
+#[wasm_bindgen]
+pub struct TransactionBuilder {
+    transaction: FinalTransaction,
+}
+
+#[wasm_bindgen]
+impl TransactionBuilder {
+    /// Starts an empty transaction.
+    #[wasm_bindgen(constructor)]
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            transaction: FinalTransaction::new(),
+        }
+    }
+
+    /// Adds an ordinary wallet input, spending the output at `txid:vout`.
+    ///
+    /// `tx_out_hex` is the consensus encoding of the output being spent, which is what the
+    /// wallet already has from its own snapshot or a chain read.
+    ///
+    /// # Errors
+    /// Returns an error if the txid or the encoded output cannot be parsed.
+    #[wasm_bindgen(js_name = addWalletInput)]
+    pub fn add_wallet_input(&mut self, txid: &str, vout: u32, tx_out_hex: &str) -> Result<(), JsError> {
+        let outpoint = OutPoint {
+            txid: Txid::from_str(txid).map_err(|e| JsError::new(&format!("Invalid txid: {e}")))?,
+            vout,
+        };
+
+        let bytes = hex::decode(tx_out_hex)
+            .map_err(|e| JsError::new(&format!("Invalid output encoding: {e}")))?;
+        let txout: TxOut = elements::encode::deserialize(&bytes)
+            .map_err(|e| JsError::new(&format!("Invalid output: {e}")))?;
+
+        self.transaction.add_input(
+            PartialInput::new(UTXO {
+                outpoint,
+                secrets: None,
+                txout,
+            }),
+            RequiredSignature::NativeEcdsa,
+        );
+
+        Ok(())
+    }
+
+    /// Adds an output paying `amount_sats` of `asset_hex` to `script_pubkey_hex`.
+    ///
+    /// A blinding key makes the output confidential. Covenant and OP_RETURN outputs are
+    /// always unblinded, because Simplicity's introspection jets cannot read a
+    /// confidential commitment.
+    ///
+    /// # Errors
+    /// Returns an error if the script, asset id or blinding key cannot be parsed.
+    #[wasm_bindgen(js_name = addOutput)]
+    pub fn add_output(
+        &mut self,
+        script_pubkey_hex: &str,
+        amount_sats: u64,
+        asset_hex: &str,
+        blinding_key_hex: Option<String>,
+    ) -> Result<(), JsError> {
+        let script = Script::from(
+            hex::decode(script_pubkey_hex)
+                .map_err(|e| JsError::new(&format!("Invalid script: {e}")))?,
+        );
+        let asset = AssetId::from_str(asset_hex)
+            .map_err(|e| JsError::new(&format!("Invalid asset id: {e}")))?;
+
+        let mut output = PartialOutput::new(script, amount_sats, asset);
+
+        if let Some(blinding_key) = blinding_key_hex.as_deref() {
+            let key = PublicKey::from_str(blinding_key)
+                .map_err(|e| JsError::new(&format!("Invalid blinding key: {e}")))?;
+
+            output = output.with_blinding_key(key);
+        }
+
+        self.transaction.add_output(output);
+
+        Ok(())
+    }
+
+    /// How many inputs and outputs this transaction currently carries.
+    #[wasm_bindgen(js_name = inputCount)]
+    #[must_use]
+    pub fn input_count(&self) -> usize {
+        self.transaction.n_inputs()
+    }
+
+    /// How many outputs this transaction currently carries.
+    #[wasm_bindgen(js_name = outputCount)]
+    #[must_use]
+    pub fn output_count(&self) -> usize {
+        self.transaction.n_outputs()
+    }
+}
+
+impl Default for TransactionBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

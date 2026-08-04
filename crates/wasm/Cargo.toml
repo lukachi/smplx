@@ -16,6 +16,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 smplx-sdk = { path = "../sdk", version = "0.0.9", default-features = false }
 simplicityhl = { workspace = true }
+elements-miniscript = { version = "0.4" }
 # Pinned exactly: wasm-bindgen refuses to run when the CLI and the crate disagree on the
 # bindgen schema, so this must match the `wasm-bindgen` binary used to generate bindings.
 wasm-bindgen = { version = "=0.2.100" }

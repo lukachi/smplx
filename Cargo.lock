@@ -1456,6 +1456,7 @@ dependencies = [
 name = "smplx-wasm"
 version = "0.0.9"
 dependencies = [
+ "elements-miniscript",
  "hex",
  "serde_json",
  "simplicityhl",

@@ -14,6 +14,10 @@ workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+# Not `workspace = true`. Cargo refuses `default-features = false` on an inherited dependency
+# whose workspace declaration leaves defaults on, and moving the disable to the root would turn
+# the provider off for cli, regtest, simplex and test, all four of which need it. This crate is
+# the only one that must build without it, so it is the one that states the path.
 smplx-sdk = { path = "../sdk", version = "0.0.9", default-features = false }
 simplicityhl = { workspace = true }
 elements-miniscript = { version = "0.4" }

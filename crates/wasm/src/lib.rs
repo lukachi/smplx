@@ -155,7 +155,7 @@ impl Contract {
     /// # Errors
     /// Returns an error if the network name is unknown or the source fails to compile.
     #[wasm_bindgen(js_name = covenantAddress)]
-    pub fn covenant_address(&self, network: &str) -> Result<String, JsError> {
+    pub fn contract_address(&self, network: &str) -> Result<String, JsError> {
         let network = network_from_str(network)?;
 
         Ok(self.program.get_tr_address(&network).to_string())
@@ -436,7 +436,7 @@ impl TransactionBuilder {
     /// Returns an error if the txid, the encoded output, the arguments or the witness cannot
     /// be parsed.
     #[wasm_bindgen(js_name = addCovenantInput)]
-    pub fn add_covenant_input(
+    pub fn add_contract_input(
         &mut self,
         txid: &str,
         vout: u32,
@@ -504,7 +504,7 @@ impl TransactionBuilder {
     /// Returns an error if the input is not a covenant input, or if the program fails to
     /// satisfy, prune or execute.
     #[wasm_bindgen(js_name = dryRunCovenantInput)]
-    pub fn dry_run_covenant_input(&self, input_index: usize, network: &str) -> Result<(), JsError> {
+    pub fn dry_run_contract_input(&self, input_index: usize, network: &str) -> Result<(), JsError> {
         let network = network_from_str(network)?;
         let inputs = self.transaction.inputs();
         let input = inputs

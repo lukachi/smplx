@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use bitcoin_hashes::Hash;
 use dyn_clone::DynClone;
@@ -93,6 +93,19 @@ pub struct Program {
     /// address it derives is not the address the funds sit at. A process-wide setting cannot
     /// express that when one transaction touches two protocols.
     include_debug_symbols: Option<bool>,
+    /// The compiled program, kept once it has been built.
+    ///
+    /// Upstream compiles in the constructor and holds the result — `feat/sdk_program_optimization`,
+    /// and the reason is that one covenant costs several compilations otherwise: a control block
+    /// alone asks for the script twice, and the environment and the witness satisfaction ask
+    /// again. This fork cannot compile in the constructor, because the source arrives at runtime
+    /// and the build mode a protocol declares is set after it. So the compilation is deferred and
+    /// then kept, which is upstream's saving without upstream's requirement.
+    ///
+    /// Shared across clones on purpose: a clone has the same source, arguments and mode, so it
+    /// has the same compiled program. Anything that changes those replaces the cell rather than
+    /// writing through it.
+    compiled: Arc<OnceLock<CompiledProgram>>,
 }
 
 dyn_clone::clone_trait_object!(ProgramTrait);
@@ -216,6 +229,7 @@ impl Program {
             arguments,
             storage: Vec::new(),
             include_debug_symbols: None,
+            compiled: Arc::new(OnceLock::new()),
         }
     }
 
@@ -237,6 +251,8 @@ impl Program {
     #[must_use]
     pub fn with_debug_symbols(mut self, include: bool) -> Self {
         self.include_debug_symbols = Some(include);
+        // The mode decides the CMR, so a result compiled under the old one is not this program's.
+        self.compiled = Arc::new(OnceLock::new());
 
         self
     }
@@ -359,7 +375,11 @@ impl Program {
         Ok(abi_meta.witness_types)
     }
 
-    fn load(&self) -> Result<CompiledProgram, ProgramError> {
+    fn load(&self) -> Result<&CompiledProgram, ProgramError> {
+        if let Some(compiled) = self.compiled.get() {
+            return Ok(compiled);
+        }
+
         let compiled = CompiledProgram::new_with_unstable(
             Arc::clone(&self.source),
             &UnstableFeatures::all(),
@@ -370,7 +390,7 @@ impl Program {
         )
         .map_err(ProgramError::Compilation)?;
 
-        Ok(compiled)
+        Ok(self.compiled.get_or_init(|| compiled))
     }
 
     fn script_version(&self) -> Result<(Script, taproot::LeafVersion), ProgramError> {
@@ -462,6 +482,35 @@ mod tests {
 
     fn dummy_asset_id(byte: u8) -> AssetId {
         AssetId::from_slice(&[byte; 32]).unwrap()
+    }
+
+    // Upstream compiles in the constructor and keeps the result, and that is a saving rather
+    // than a style: one covenant asks for the compiled program six to eight times — a control
+    // block alone asks twice, then the environment and the witness satisfaction ask again. This
+    // fork defers the compilation because the source arrives at runtime, so the saving has to be
+    // kept deliberately. A merge with upstream dropped it once by resolving in this fork's
+    // favour without asking what upstream's change was for; this is what makes that visible.
+    #[test]
+    fn compiles_once_and_keeps_it() {
+        let program = dummy_program();
+
+        let first = program.load().expect("the dummy program compiles");
+        let second = program.load().expect("the dummy program compiles");
+
+        assert!(std::ptr::eq(first, second), "the program was compiled twice");
+    }
+
+    // And a program asked to build differently is a different program, so the kept result must
+    // not survive the change: the mode decides the CMR and therefore the address.
+    #[test]
+    fn a_changed_build_mode_is_not_served_the_old_compilation() {
+        let plain = dummy_program();
+        let plain_cmr = plain.get_cmr().expect("compiles");
+
+        let debug = dummy_program().with_debug_symbols(true);
+        let debug_cmr = debug.get_cmr().expect("compiles");
+
+        assert_ne!(plain_cmr, debug_cmr, "the build mode did not reach the compiler");
     }
 
     fn dummy_program() -> Program {

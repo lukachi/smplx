@@ -411,31 +411,6 @@ impl Program {
     }
 }
 
-#[cfg(test)]
-mod depth_tests {
-    use super::*;
-
-    // The reference implementation folds the tap tree left, and every deployed covenant
-    // address was derived that way. These are the depths a left fold needs, in the order
-    // TaprootBuilder consumes them: the program's leaf and the first extra sit deepest, and
-    // each further extra leaf is one level shallower.
-    #[test]
-    fn left_folded_depths() {
-        assert_eq!(Program::taproot_leaf_depths(1), vec![0]);
-        assert_eq!(Program::taproot_leaf_depths(2), vec![1, 1]);
-        assert_eq!(Program::taproot_leaf_depths(3), vec![2, 2, 1]);
-        assert_eq!(Program::taproot_leaf_depths(4), vec![3, 3, 2, 1]);
-        assert_eq!(Program::taproot_leaf_depths(5), vec![4, 4, 3, 2, 1]);
-    }
-
-    // The measured boundary: a balanced tree agrees with a left fold up to three leaves and
-    // diverges from four. Four leaves balanced is [2, 2, 2, 2]; left-folded it is not.
-    #[test]
-    fn diverges_from_a_balanced_tree_at_four_leaves() {
-        assert_eq!(Program::taproot_leaf_depths(3), vec![2, 2, 1]);
-        assert_ne!(Program::taproot_leaf_depths(4), vec![2, 2, 2, 2]);
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -529,20 +504,30 @@ mod tests {
         assert!(program.get_env(&pst, 1, &network).is_ok());
     }
 
+    // Upstream's `test_taproot_leaf_depths_known_values` stood here and asserted a balanced
+    // tree — [2, 2, 2, 2] at four leaves. This fork folds left, because every deployed covenant
+    // address was derived by the reference implementation, which folds left. So that test had
+    // been failing since the fold changed, and keeping it beside these would be two tests
+    // asserting opposite things about one function. It is replaced rather than deleted: what it
+    // was protecting — that the depths are pinned and cannot drift unnoticed — is what these do.
+    // The reference implementation folds the tap tree left, and every deployed covenant
+    // address was derived that way. These are the depths a left fold needs, in the order
+    // TaprootBuilder consumes them: the program's leaf and the first extra sit deepest, and
+    // each further extra leaf is one level shallower.
     #[test]
-    fn test_taproot_leaf_depths_known_values() {
-        let cases = [
-            (1, vec![0]),
-            (2, vec![1, 1]),
-            (3, vec![2, 2, 1]),
-            (4, vec![2, 2, 2, 2]),
-            (5, vec![3, 3, 2, 2, 2]),
-            (6, vec![3, 3, 3, 3, 2, 2]),
-            (8, vec![3, 3, 3, 3, 3, 3, 3, 3]),
-        ];
+    fn left_folded_depths() {
+        assert_eq!(Program::taproot_leaf_depths(1), vec![0]);
+        assert_eq!(Program::taproot_leaf_depths(2), vec![1, 1]);
+        assert_eq!(Program::taproot_leaf_depths(3), vec![2, 2, 1]);
+        assert_eq!(Program::taproot_leaf_depths(4), vec![3, 3, 2, 1]);
+        assert_eq!(Program::taproot_leaf_depths(5), vec![4, 4, 3, 2, 1]);
+    }
 
-        for (n, expected) in cases {
-            assert_eq!(Program::taproot_leaf_depths(n), expected, "n={n}");
-        }
+    // The measured boundary: a balanced tree agrees with a left fold up to three leaves and
+    // diverges from four. Four leaves balanced is [2, 2, 2, 2]; left-folded it is not.
+    #[test]
+    fn diverges_from_a_balanced_tree_at_four_leaves() {
+        assert_eq!(Program::taproot_leaf_depths(3), vec![2, 2, 1]);
+        assert_ne!(Program::taproot_leaf_depths(4), vec![2, 2, 2, 2]);
     }
 }

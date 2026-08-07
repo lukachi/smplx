@@ -20,7 +20,10 @@ impl ChangeTarget {
     /// Creates an explicit (unblinded) change target.
     #[must_use]
     pub fn new(script_pubkey: Script) -> Self {
-        Self { script_pubkey, blinding_key: None }
+        Self {
+            script_pubkey,
+            blinding_key: None,
+        }
     }
 
     /// Attaches a blinding public key, making the change output confidential.

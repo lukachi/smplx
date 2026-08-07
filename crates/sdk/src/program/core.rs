@@ -346,7 +346,8 @@ impl Program {
             Arc::clone(&self.source),
             &UnstableFeatures::all(),
             self.arguments.build_arguments(),
-            self.include_debug_symbols.unwrap_or_else(GlobalConfig::get_include_debug_symbols),
+            self.include_debug_symbols
+                .unwrap_or_else(GlobalConfig::get_include_debug_symbols),
             Box::new(ElementsJetHinter),
         )
         .map_err(ProgramError::Compilation)?;
@@ -410,7 +411,6 @@ impl Program {
         Ok(info.control_block(&script_ver).expect("control block should exist"))
     }
 }
-
 
 #[cfg(test)]
 mod tests {

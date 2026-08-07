@@ -139,6 +139,21 @@ enum Estimate {
 
 // TODO: refactor descriptors to be a standalone object to specify custom derivation paths.
 impl Signer {
+    /// Creates a new `Signer` instance seeded from the provided mnemonic and paired with the specified provider.
+    ///
+    /// # Panics
+    /// Panics if the mnemonic fails to parse, or if deriving the master private key fails.
+    #[cfg(feature = "provider")]
+    #[must_use]
+    pub fn new(mnemonic: &str, provider: Box<dyn ProviderTrait>) -> Self {
+        let network = *provider.get_network();
+        let mut signer = Self::from_mnemonic(mnemonic, network);
+
+        signer.provider = Some(provider);
+
+        signer
+    }
+
     /// Creates a `Signer` from a mnemonic and an explicit network, with no blockchain access.
     ///
     /// This is the constructor a host with its own networking and its own key custody uses.
@@ -181,29 +196,6 @@ impl Signer {
         }
     }
 
-    /// Returns the configured provider, or an error when the signer was built without one.
-    #[cfg(feature = "provider")]
-    fn provider(&self) -> Result<&dyn ProviderTrait, SignerError> {
-        self.provider
-            .as_deref()
-            .ok_or(SignerError::ProviderUnavailable)
-    }
-
-    /// Creates a new `Signer` instance seeded from the provided mnemonic and paired with the specified provider.
-    ///
-    /// # Panics
-    /// Panics if the mnemonic fails to parse, or if deriving the master private key fails.
-    #[cfg(feature = "provider")]
-    #[must_use]
-    pub fn new(mnemonic: &str, provider: Box<dyn ProviderTrait>) -> Self {
-        let network = *provider.get_network();
-        let mut signer = Self::from_mnemonic(mnemonic, network);
-
-        signer.provider = Some(provider);
-
-        signer
-    }
-
     /// Composes, funds, and broadcasts a standard network transaction sending the specified value of the primary policy asset.
     ///
     /// # Errors
@@ -217,7 +209,7 @@ impl Signer {
 
         let (tx, _fee) = self.finalize(&ft)?;
 
-        Ok(self.provider()?.broadcast_transaction(&tx)?)
+        Ok(self.get_provider()?.broadcast_transaction(&tx)?)
     }
 
     /// Evaluates, funds, and broadcasts an already assembled `FinalTransaction`.
@@ -228,7 +220,7 @@ impl Signer {
     pub fn broadcast(&self, tx: &FinalTransaction) -> Result<TxReceipt<'_>, SignerError> {
         let (tx, _fee) = self.finalize(tx)?;
 
-        Ok(self.provider()?.broadcast_transaction(&tx)?)
+        Ok(self.get_provider()?.broadcast_transaction(&tx)?)
     }
 
     /// Evaluates the input components of a `FinalTransaction`, iteratively selecting available wallet UTXOs to cover outputs and estimated fees.
@@ -254,7 +246,7 @@ impl Signer {
 
         let mut fee_tx = tx.clone();
         let mut curr_fee = MIN_FEE;
-        let fee_rate = self.provider()?.fetch_fee_rate(1)?;
+        let fee_rate = self.get_provider()?.fetch_fee_rate(1)?;
 
         for utxo in signer_utxos {
             let policy_amount_delta = fee_tx.calculate_fee_delta(&self.network);
@@ -318,12 +310,13 @@ impl Signer {
 
     /// Returns a reference to the active configured network provider.
     ///
-    /// # Panics
-    /// Panics if the signer was constructed without a provider.
+    /// # Errors
+    /// Returns `ProviderUnavailable` when the signer was built without one. It used to panic
+    /// here instead, behind a second private accessor that returned the error and was then
+    /// unwrapped — one function written twice, with the honest half unreachable.
     #[cfg(feature = "provider")]
-    #[must_use]
-    pub fn get_provider(&self) -> &dyn ProviderTrait {
-        self.provider().unwrap()
+    pub fn get_provider(&self) -> Result<&dyn ProviderTrait, SignerError> {
+        self.provider.as_deref().ok_or(SignerError::ProviderUnavailable)
     }
 
     /// Returns the confidential elements address matching the local wallet logic.
@@ -404,7 +397,9 @@ impl Signer {
         confidential_filter: &dyn Fn(&UTXO) -> bool,
     ) -> Result<Vec<UTXO>, SignerError> {
         // fetch explicit and confidential utxos
-        let mut all_utxos = self.provider()?.fetch_address_utxos(&self.get_confidential_address())?;
+        let mut all_utxos = self
+            .get_provider()?
+            .fetch_address_utxos(&self.get_confidential_address())?;
 
         // filter out only confidential utxos and unblind them
         let mut confidential_utxos = self.unblind(
@@ -532,12 +527,12 @@ impl Signer {
         // address is only correct for a wallet that watches exactly that address
         let change = match change {
             Some(target) => target.clone(),
-            None => ChangeTarget::new(self.get_address().script_pubkey())
-                .with_blinding_key(self.get_blinding_public_key()),
+            None => {
+                ChangeTarget::new(self.get_address().script_pubkey()).with_blinding_key(self.get_blinding_public_key())
+            }
         };
 
-        let mut change_output =
-            PartialOutput::new(change.script_pubkey, PLACEHOLDER_FEE, self.network.policy_asset());
+        let mut change_output = PartialOutput::new(change.script_pubkey, PLACEHOLDER_FEE, self.network.policy_asset());
 
         if let Some(blinding_key) = change.blinding_key {
             change_output = change_output.with_blinding_key(blinding_key);
@@ -636,8 +631,7 @@ impl Signer {
             } else {
                 // we need to sign the UTXO as is
                 // TODO: do we always sign?
-                let signed_witness =
-                    self.sign_input(&pst, index, input_i.partial_input.derivation_path.as_ref())?;
+                let signed_witness = self.sign_input(&pst, index, input_i.partial_input.derivation_path.as_ref())?;
                 let raw_sig = elementssig_to_rawsig(&(signed_witness.1, EcdsaSighashType::All));
 
                 pst.inputs_mut()[index].final_script_witness = Some(vec![raw_sig, signed_witness.0.to_bytes()]);
@@ -770,7 +764,11 @@ mod tests {
         let address = signer.get_address();
         let pubkey = signer.get_ecdsa_public_key();
 
-        let derived_addr = Address::p2wpkh(&pubkey, None, signer.get_provider().get_network().address_params());
+        let derived_addr = Address::p2wpkh(
+            &pubkey,
+            None,
+            signer.get_provider().unwrap().get_network().address_params(),
+        );
 
         assert_eq!(derived_addr.to_string(), address.to_string());
     }

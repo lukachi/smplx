@@ -19,12 +19,11 @@ use simplicityhl::elements::{AssetId, OutPoint, Script, Sequence, TxOut, Txid};
 use simplicityhl::{Arguments, WitnessValues};
 
 use smplx_sdk::program::{ArgumentsTrait, Program, WitnessTrait};
+use smplx_sdk::provider::SimplicityNetwork;
 use smplx_sdk::signer::Signer;
 use smplx_sdk::transaction::{
-    ChangeTarget, FinalTransaction, PartialInput, PartialOutput, ProgramInput, RequiredSignature,
-    UTXO,
+    ChangeTarget, FinalTransaction, PartialInput, PartialOutput, ProgramInput, RequiredSignature, UTXO,
 };
-use smplx_sdk::provider::SimplicityNetwork;
 
 use wasm_bindgen::prelude::*;
 
@@ -96,16 +95,15 @@ impl Contract {
             _ => Arguments::default(),
         };
 
-        let mut program =
-            Program::new(Arc::<str>::from(source), Box::new(FixedArguments(arguments)));
+        let mut program = Program::new(Arc::<str>::from(source), Box::new(FixedArguments(arguments)));
 
         if let Some(include) = include_debug_symbols {
             program = program.with_debug_symbols(include);
         }
 
         if let Some(json) = extra_leaves_json.as_deref().filter(|json| !json.trim().is_empty()) {
-            let leaves: Vec<String> = serde_json::from_str(json)
-                .map_err(|e| JsError::new(&format!("Invalid extra leaves: {e}")))?;
+            let leaves: Vec<String> =
+                serde_json::from_str(json).map_err(|e| JsError::new(&format!("Invalid extra leaves: {e}")))?;
 
             program = program.with_storage_capacity(leaves.len());
 
@@ -126,10 +124,7 @@ impl Contract {
     /// Returns an error if the source fails to compile.
     #[wasm_bindgen(js_name = commitmentMerkleRoot)]
     pub fn commitment_merkle_root(&self) -> Result<String, JsError> {
-        let cmr = self
-            .program
-            .get_cmr()
-            .map_err(|e| JsError::new(&e.to_string()))?;
+        let cmr = self.program.get_cmr().map_err(|e| JsError::new(&e.to_string()))?;
 
         Ok(hex::encode(cmr))
     }
@@ -145,9 +140,7 @@ impl Contract {
     pub fn script_pubkey_hex(&self, network: &str) -> Result<String, JsError> {
         let network = network_from_str(network)?;
 
-        Ok(hex::encode(
-            self.program.get_script_pubkey(&network).as_bytes(),
-        ))
+        Ok(hex::encode(self.program.get_script_pubkey(&network).as_bytes()))
     }
 
     /// Compiles the contract and returns the taproot address its funds would sit at.
@@ -263,8 +256,7 @@ impl WalletSigner {
         change_blinding_key_hex: Option<String>,
     ) -> Result<SignedTransaction, JsError> {
         let script = Script::from(
-            hex::decode(change_script_pubkey_hex)
-                .map_err(|e| JsError::new(&format!("Invalid change script: {e}")))?,
+            hex::decode(change_script_pubkey_hex).map_err(|e| JsError::new(&format!("Invalid change script: {e}")))?,
         );
 
         let mut change = ChangeTarget::new(script);
@@ -288,7 +280,6 @@ impl WalletSigner {
         })
     }
 }
-
 
 /// Applies a manifest's declared sequence to an input, when it declared one.
 ///
@@ -362,10 +353,9 @@ impl TransactionBuilder {
             vout,
         };
 
-        let bytes = hex::decode(tx_out_hex)
-            .map_err(|e| JsError::new(&format!("Invalid output encoding: {e}")))?;
-        let txout: TxOut = elements::encode::deserialize(&bytes)
-            .map_err(|e| JsError::new(&format!("Invalid output: {e}")))?;
+        let bytes = hex::decode(tx_out_hex).map_err(|e| JsError::new(&format!("Invalid output encoding: {e}")))?;
+        let txout: TxOut =
+            elements::encode::deserialize(&bytes).map_err(|e| JsError::new(&format!("Invalid output: {e}")))?;
 
         self.transaction.add_input(
             with_sequence(
@@ -398,18 +388,15 @@ impl TransactionBuilder {
         asset_hex: &str,
         blinding_key_hex: Option<String>,
     ) -> Result<(), JsError> {
-        let script = Script::from(
-            hex::decode(script_pubkey_hex)
-                .map_err(|e| JsError::new(&format!("Invalid script: {e}")))?,
-        );
-        let asset = AssetId::from_str(asset_hex)
-            .map_err(|e| JsError::new(&format!("Invalid asset id: {e}")))?;
+        let script =
+            Script::from(hex::decode(script_pubkey_hex).map_err(|e| JsError::new(&format!("Invalid script: {e}")))?);
+        let asset = AssetId::from_str(asset_hex).map_err(|e| JsError::new(&format!("Invalid asset id: {e}")))?;
 
         let mut output = PartialOutput::new(script, amount_sats, asset);
 
         if let Some(blinding_key) = blinding_key_hex.as_deref() {
-            let key = PublicKey::from_str(blinding_key)
-                .map_err(|e| JsError::new(&format!("Invalid blinding key: {e}")))?;
+            let key =
+                PublicKey::from_str(blinding_key).map_err(|e| JsError::new(&format!("Invalid blinding key: {e}")))?;
 
             output = output.with_blinding_key(key);
         }
@@ -452,10 +439,9 @@ impl TransactionBuilder {
             vout,
         };
 
-        let bytes = hex::decode(tx_out_hex)
-            .map_err(|e| JsError::new(&format!("Invalid output encoding: {e}")))?;
-        let txout: TxOut = elements::encode::deserialize(&bytes)
-            .map_err(|e| JsError::new(&format!("Invalid output: {e}")))?;
+        let bytes = hex::decode(tx_out_hex).map_err(|e| JsError::new(&format!("Invalid output encoding: {e}")))?;
+        let txout: TxOut =
+            elements::encode::deserialize(&bytes).map_err(|e| JsError::new(&format!("Invalid output: {e}")))?;
 
         let arguments = match arguments_json.as_deref() {
             Some(json) if !json.trim().is_empty() => serde_json::from_str::<Arguments>(json)
@@ -510,20 +496,16 @@ impl TransactionBuilder {
         let input = inputs
             .get(input_index)
             .ok_or_else(|| JsError::new(&format!("There is no input at index {input_index}.")))?;
-        let program_input = input.program_input.as_ref().ok_or_else(|| {
-            JsError::new(&format!("Input {input_index} is not a covenant input."))
-        })?;
+        let program_input = input
+            .program_input
+            .as_ref()
+            .ok_or_else(|| JsError::new(&format!("Input {input_index} is not a covenant input.")))?;
 
         let (pst, _secrets) = self.transaction.extract_pst();
 
         program_input
             .program
-            .execute(
-                &pst,
-                &program_input.witness.build_witness(),
-                input_index,
-                &network,
-            )
+            .execute(&pst, &program_input.witness.build_witness(), input_index, &network)
             .map_err(|e| JsError::new(&format!("Input {input_index} did not execute: {e}")))?;
 
         Ok(())

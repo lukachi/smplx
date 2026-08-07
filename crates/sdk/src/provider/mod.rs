@@ -14,9 +14,9 @@ pub mod rpc;
 #[cfg(feature = "provider")]
 pub mod simplex;
 
-pub use core::ProviderTrait;
 #[cfg(feature = "provider")]
 pub use core::ProviderInfo;
+pub use core::ProviderTrait;
 #[cfg(feature = "provider")]
 pub use esplora::EsploraProvider;
 #[cfg(feature = "provider")]

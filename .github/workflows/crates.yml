@@ -5,12 +5,6 @@ on:
   push:
     branches:
       - master
-      # This fork's working branch. Without it nothing ran here at all: the triggers
-      # below fire on pushes to master and on pull requests into upstream, and a fork
-      # pushes to neither. A pull request from a fork additionally waits on a maintainer
-      # approving the workflow run, so #117 sat open with no check ever executed while
-      # the code generator emitted artifacts that did not compile.
-      - humid/wasm-wallet-integration
   pull_request:
     branches:
       - master

@@ -6,27 +6,31 @@
 
 /// The SimplicityHL compiler this SDK compiles contracts with.
 ///
-/// A wallet that refuses a manifest asking for another version has to be right about which
-/// one it has, so this is pinned to the workspace's dependency by a test that reads the
-/// manifest rather than by anyone remembering to update it.
-pub const COMPILER_VERSION: &str = "0.6.0";
+/// Read from the workspace manifest by `build.rs` rather than written down here. A wallet
+/// that refuses a manifest asking for another version has to be right about which one it
+/// has, and a constant maintained by hand is right only until the dependency moves — which
+/// a test can catch, but only where tests run.
+pub const COMPILER_VERSION: &str = env!("SMPLX_COMPILER_VERSION");
 
 #[cfg(test)]
 mod compiler_version_tests {
     use super::COMPILER_VERSION;
 
-    /// Fails when the dependency moves and this constant does not, which is the only way the
-    /// constant can lie — and a lying constant refuses a manifest that should have built.
+    /// The build script can only fail loudly or hand back something unusable, and the second
+    /// is the one nothing else would notice: an empty or malformed version reaches a wallet as
+    /// a comparison that refuses every manifest declaring one. The drift test this replaces is
+    /// gone because the value is no longer written by hand — what it protected is not.
     #[test]
-    fn matches_the_workspace_dependency() {
-        let workspace = include_str!("../../../Cargo.toml");
-        let declared = workspace
-            .lines()
-            .find_map(|line| line.strip_prefix("simplicityhl = { version = \""))
-            .and_then(|rest| rest.split('"').next())
-            .expect("the workspace should pin simplicityhl");
+    fn is_a_version_rather_than_whatever_the_manifest_happened_to_contain() {
+        let parts: Vec<&str> = COMPILER_VERSION.split('.').collect();
 
-        assert_eq!(declared, COMPILER_VERSION);
+        assert!(parts.len() >= 2, "not a version: {COMPILER_VERSION:?}");
+        assert!(
+            parts
+                .iter()
+                .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit())),
+            "not a version: {COMPILER_VERSION:?}"
+        );
     }
 }
 

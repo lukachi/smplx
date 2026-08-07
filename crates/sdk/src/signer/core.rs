@@ -286,12 +286,7 @@ impl Signer {
     /// # Errors
     /// Returns a `SignerError` if the assembled inputs do not meet dust limits or fail to cover the
     ///  dynamically estimated required fee.
-    pub fn finalize_strict(
-        &self,
-        tx: &FinalTransaction,
-        fee_rate: f32,
-        change: Option<&ChangeOutput>,
-    ) -> Result<(Transaction, u64), SignerError> {
+    pub fn finalize_strict(&self, tx: &FinalTransaction, fee_rate: f32) -> Result<(Transaction, u64), SignerError> {
         let policy_amount_delta = tx.calculate_fee_delta(&self.network);
 
         if policy_amount_delta < MIN_FEE.cast_signed() {
@@ -299,7 +294,7 @@ impl Signer {
         }
 
         // policy_amount_delta will be > 0
-        match self.estimate_tx(tx.clone(), fee_rate, policy_amount_delta.cast_unsigned(), change)? {
+        match self.estimate_tx(tx.clone(), fee_rate, policy_amount_delta.cast_unsigned(), tx.change())? {
             Estimate::Success(tx, fee) => {
                 ProgramLogger::flush_logs();
                 Ok((tx, fee))

@@ -281,7 +281,7 @@ impl WalletSigner {
 
         let (transaction, fee_sats) = self
             .signer
-            .finalize_strict(builder.inner(), fee_rate, Some(&change))
+            .finalize_strict(&builder.inner().clone().with_change(change), fee_rate)
             .map_err(|e| JsError::new(&format!("Could not finalise the transaction: {e}")))?;
 
         Ok(SignedTransaction {

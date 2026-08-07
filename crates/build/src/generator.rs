@@ -252,7 +252,7 @@ impl ArtifactsGenerator {
 
         let code = quote! {
             use simplex::include_simf;
-            use simplex::program::{ArgumentsTrait, Program};
+            use simplex::program::{ArgumentsTrait, Program, ProgramError};
             use simplex::provider::SimplicityNetwork;
             use simplex::simplicityhl::elements::Script;
             use simplex::simplicityhl::elements::secp256k1_zkp::XOnlyPublicKey;
@@ -313,8 +313,15 @@ impl ArtifactsGenerator {
                     self.program.get_script_hash(network)
                 }
 
-                #[must_use]
-                pub fn get_tapleaf_hash(&self) -> [u8; 32] {
+                /// The tapleaf hash of this program's Simplicity script.
+                ///
+                /// Fallible here where upstream's is infallible, because this SDK compiles a
+                /// program on first use rather than in its constructor: the source can arrive
+                /// at runtime, so asking for the script is a compilation that can fail.
+                ///
+                /// # Errors
+                /// Returns a `ProgramError` if the contract fails to compile.
+                pub fn get_tapleaf_hash(&self) -> Result<[u8; 32], ProgramError> {
                     self.program.get_tapleaf_hash()
                 }
             }

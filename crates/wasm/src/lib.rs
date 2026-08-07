@@ -52,9 +52,12 @@ fn network_from_str(network: &str) -> Result<SimplicityNetwork, JsError> {
 
 /// A compiled SimplicityHL contract.
 ///
-/// Holds the source rather than the compiled artifact: compilation runs on demand, so the
-/// same object can be asked for a CMR and for an address without either being cached into
-/// a state that could drift from the source it came from.
+/// Holds the source rather than a compiled artifact the caller has to build first, so a
+/// contract whose text arrives at runtime is constructed like any other. The SDK compiles it
+/// on first use and keeps the result, so asking the same object for a CMR and for an address
+/// costs one compilation rather than several; anything that would change what compiles —
+/// today only the declared build mode — discards the kept result rather than writing through
+/// it.
 #[wasm_bindgen]
 pub struct Contract {
     program: Program,
@@ -95,7 +98,7 @@ impl Contract {
             _ => Arguments::default(),
         };
 
-        let mut program = Program::new(Arc::<str>::from(source), Box::new(FixedArguments(arguments)));
+        let mut program = Program::new(Arc::<str>::from(source), &FixedArguments(arguments));
 
         if let Some(include) = include_debug_symbols {
             program = program.with_debug_symbols(include);
@@ -453,7 +456,7 @@ impl TransactionBuilder {
             _ => WitnessValues::default(),
         };
 
-        let program = Program::new(Arc::<str>::from(source), Box::new(FixedArguments(arguments)));
+        let program = Program::new(Arc::<str>::from(source), &FixedArguments(arguments));
 
         self.transaction.add_program_input(
             Self::with_sequence(

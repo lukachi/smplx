@@ -10,7 +10,7 @@ use simplicityhl::simplicity::bitcoin::{XOnlyPublicKey, secp256k1};
 use simplicityhl::simplicity::jet::elements::{ElementsEnv, ElementsUtxo};
 use simplicityhl::simplicity::{BitMachine, RedeemNode, Value, leaf_version};
 use simplicityhl::{CompiledProgram, UnstableFeatures};
-use simplicityhl::{Parameters, WitnessTypes, WitnessValues};
+use simplicityhl::{Arguments, Parameters, WitnessTypes, WitnessValues};
 
 use crate::global::GlobalConfig;
 use crate::program::logger::ProgramLogger;
@@ -84,7 +84,15 @@ pub trait ProgramTrait: DynClone {
 pub struct Program {
     source: Arc<str>,
     pub_key: XOnlyPublicKey,
-    arguments: Box<dyn ArgumentsTrait>,
+    /// The compile-time arguments, built once at construction rather than held as a trait
+    /// object and rebuilt.
+    ///
+    /// Upstream takes `&dyn ArgumentsTrait` and consumes it immediately, because it compiles
+    /// in the constructor. This fork compiles later, so it has to keep something — and keeping
+    /// the built value rather than the builder is what lets the signature stay upstream's:
+    /// a stored `Box<dyn ArgumentsTrait>` would have to outlive the call, forcing a `'static`
+    /// bound the code generator does not write.
+    arguments: Arguments,
     storage: Vec<Vec<u8>>,
     /// Whether this program compiles with debug symbols, which changes its CMR.
     ///
@@ -220,13 +228,16 @@ impl Program {
     /// Creates a new instance of the struct with the provided source string and arguments.
     ///
     /// The source is taken by value rather than as a `&'static str`, so a program whose
-    /// text arrives at runtime is as ordinary as one baked in at compile time.
+    /// text arrives at runtime is as ordinary as one baked in at compile time. The arguments
+    /// are taken by reference, which is upstream's shape rather than this fork's earlier
+    /// `Box`: the code generator emits a call written against upstream's signature, so
+    /// keeping our own made every generated artifact fail to compile.
     #[must_use]
-    pub fn new(source: impl Into<Arc<str>>, arguments: Box<dyn ArgumentsTrait>) -> Self {
+    pub fn new(source: impl Into<Arc<str>>, arguments: &dyn ArgumentsTrait) -> Self {
         Self {
             source: source.into(),
             pub_key: tr_unspendable_key(),
-            arguments,
+            arguments: arguments.build_arguments(),
             storage: Vec::new(),
             include_debug_symbols: None,
             compiled: Arc::new(OnceLock::new()),
@@ -383,7 +394,7 @@ impl Program {
         let compiled = CompiledProgram::new_with_unstable(
             Arc::clone(&self.source),
             &UnstableFeatures::all(),
-            self.arguments.build_arguments(),
+            self.arguments.clone(),
             self.include_debug_symbols
                 .unwrap_or_else(GlobalConfig::get_include_debug_symbols),
             Box::new(ElementsJetHinter),
@@ -514,7 +525,7 @@ mod tests {
     }
 
     fn dummy_program() -> Program {
-        Program::new(DUMMY_PROGRAM, Box::new(EmptyArguments))
+        Program::new(DUMMY_PROGRAM, &EmptyArguments)
     }
 
     fn dummy_network() -> SimplicityNetwork {

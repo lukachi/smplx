@@ -39,7 +39,7 @@ use crate::program::logger::ProgramLogger;
 use crate::provider::ProviderTrait;
 use crate::provider::SimplicityNetwork;
 use crate::signer::wtns_injector::WtnsInjector;
-use crate::transaction::{ChangeTarget, FinalTransaction, PartialOutput, RequiredSignature};
+use crate::transaction::{ChangeOutput, FinalTransaction, PartialOutput, RequiredSignature};
 #[cfg(feature = "provider")]
 use crate::transaction::{PartialInput, TxReceipt, UTXO};
 
@@ -290,7 +290,7 @@ impl Signer {
         &self,
         tx: &FinalTransaction,
         fee_rate: f32,
-        change: Option<&ChangeTarget>,
+        change: Option<&ChangeOutput>,
     ) -> Result<(Transaction, u64), SignerError> {
         let policy_amount_delta = tx.calculate_fee_delta(&self.network);
 
@@ -520,7 +520,7 @@ impl Signer {
         mut fee_tx: FinalTransaction,
         fee_rate: f32,
         available_delta: u64,
-        change: Option<&ChangeTarget>,
+        change: Option<&ChangeOutput>,
     ) -> Result<Estimate, SignerError> {
         // estimate the tx fee with the change
         // the caller supplies the change target; falling back to this signer's own
@@ -528,7 +528,7 @@ impl Signer {
         let change = match change {
             Some(target) => target.clone(),
             None => {
-                ChangeTarget::new(self.get_address().script_pubkey()).with_blinding_key(self.get_blinding_public_key())
+                ChangeOutput::new(self.get_address().script_pubkey()).with_blinding_key(self.get_blinding_public_key())
             }
         };
 

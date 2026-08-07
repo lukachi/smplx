@@ -22,7 +22,7 @@ use smplx_sdk::program::{ArgumentsTrait, Program, WitnessTrait};
 use smplx_sdk::provider::SimplicityNetwork;
 use smplx_sdk::signer::Signer;
 use smplx_sdk::transaction::{
-    ChangeTarget, FinalTransaction, PartialInput, PartialOutput, ProgramInput, RequiredSignature, UTXO,
+    ChangeOutput, FinalTransaction, PartialInput, PartialOutput, ProgramInput, RequiredSignature, UTXO,
 };
 
 use wasm_bindgen::prelude::*;
@@ -221,6 +221,17 @@ impl WalletSigner {
         hex::encode(self.signer.get_schnorr_public_key().serialize())
     }
 
+    /// The compressed public key used for ordinary wallet inputs, as lowercase hex.
+    ///
+    /// The Schnorr key above is what a covenant is parameterised with; this is what the
+    /// signer proves for an ordinary input it spends, so a host that has to describe both
+    /// halves of what this signer can sign needs it too.
+    #[wasm_bindgen(js_name = ecdsaPublicKey)]
+    #[must_use]
+    pub fn ecdsa_public_key(&self) -> String {
+        hex::encode(self.signer.get_ecdsa_public_key().to_bytes())
+    }
+
     /// The scriptPubKey of the signer's own address, as lowercase hex.
     ///
     /// This is what a wallet output pays to, so it is what the caller encodes into the
@@ -259,7 +270,7 @@ impl WalletSigner {
             hex::decode(change_script_pubkey_hex).map_err(|e| JsError::new(&format!("Invalid change script: {e}")))?,
         );
 
-        let mut change = ChangeTarget::new(script);
+        let mut change = ChangeOutput::new(script);
 
         if let Some(blinding_key) = change_blinding_key_hex.as_deref() {
             let key = PublicKey::from_str(blinding_key)

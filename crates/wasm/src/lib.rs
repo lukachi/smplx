@@ -468,10 +468,7 @@ impl TransactionBuilder {
                 program: Box::new(program),
                 witness: Box::new(FixedWitness(witness)),
             },
-            match signature_witness {
-                Some(name) if !name.trim().is_empty() => RequiredSignature::Witness(name),
-                _ => RequiredSignature::None,
-            },
+            Self::required_signature(signature_witness.as_deref())?,
         );
 
         Ok(())
@@ -525,6 +522,36 @@ impl TransactionBuilder {
 }
 
 impl TransactionBuilder {
+    /// Which signature a covenant input needs, from the name the caller gave it.
+    ///
+    /// A witness can sit at the top of an input's witness set or inside a structure, and the
+    /// SDK distinguishes the two. The binding takes one string for both and splits it on `.`,
+    /// so `unlock` is the flat form and `spend.owner.sig` is the nested one — which keeps the
+    /// caller's side a name rather than a name plus a shape, and means the binding can express
+    /// everything the enum can rather than half of it.
+    ///
+    /// A name that is empty or only separators asks for no signature, which is what a covenant
+    /// that authenticates nothing wants.
+    fn required_signature(signature_witness: Option<&str>) -> Result<RequiredSignature, JsError> {
+        let Some(raw) = signature_witness.map(str::trim).filter(|name| !name.is_empty()) else {
+            return Ok(RequiredSignature::None);
+        };
+
+        let mut segments = raw.split('.').map(str::trim).filter(|part| !part.is_empty());
+
+        let Some(name) = segments.next() else {
+            return Ok(RequiredSignature::None);
+        };
+
+        let path: Vec<&str> = segments.collect();
+
+        if path.is_empty() {
+            return Ok(RequiredSignature::Witness(name.to_string()));
+        }
+
+        Ok(RequiredSignature::witness_with_path(name, path))
+    }
+
     /// Applies a manifest's declared sequence to an input, when it declared one.
     ///
     /// A sequence is a relative timelock: it says how long after the output it spends was

@@ -122,6 +122,21 @@ impl PartialInput {
     }
 
     /// Sets the derivation path, relative to the account path, of the key that spends this input.
+    ///
+    /// Relative means it is appended to `m/84h/{coin}h/0h`, which the signer derives from its
+    /// own network — so what belongs here is the two unhardened components after the account:
+    /// the chain and the index. `0/0` is the first address handed out and is what the signer
+    /// uses when no path is given; `1/4` is the fifth change address.
+    ///
+    /// ```
+    /// # use std::str::FromStr;
+    /// # use elements_miniscript::elements::bitcoin::bip32::DerivationPath;
+    /// let path = DerivationPath::from_str("0/3").expect("chain and index");
+    /// ```
+    ///
+    /// Passing an absolute path here derives from the account rather than from the master, so
+    /// `m/84h/1h/0h` would sign with a key at `m/84h/1h/0h/84h/1h/0h` — a valid key that owns
+    /// nothing, and a signature the chain rejects rather than anything here.
     #[must_use]
     pub fn with_derivation_path(mut self, derivation_path: DerivationPath) -> Self {
         self.derivation_path = Some(derivation_path);

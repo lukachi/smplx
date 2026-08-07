@@ -292,19 +292,6 @@ impl WalletSigner {
     }
 }
 
-/// Applies a manifest's declared sequence to an input, when it declared one.
-///
-/// A sequence is a relative timelock: it says how long after the output it spends was
-/// confirmed this transaction may enter a block. A covenant can require one, and a
-/// transaction built without it is rejected by the chain rather than by anything here, so
-/// dropping the declaration silently would fail late and unexplainably.
-fn with_sequence(input: PartialInput, sequence: Option<u32>) -> PartialInput {
-    match sequence {
-        Some(value) => input.with_sequence(Sequence(value)),
-        None => input,
-    }
-}
-
 /// Witness values for a covenant input, resolved before the transaction is assembled.
 ///
 /// Held as parsed `WitnessValues` so a malformed set is rejected when the caller supplies
@@ -369,7 +356,7 @@ impl TransactionBuilder {
             elements::encode::deserialize(&bytes).map_err(|e| JsError::new(&format!("Invalid output: {e}")))?;
 
         self.transaction.add_input(
-            with_sequence(
+            Self::with_sequence(
                 PartialInput::new(UTXO {
                     outpoint,
                     secrets: None,
@@ -469,7 +456,7 @@ impl TransactionBuilder {
         let program = Program::new(Arc::<str>::from(source), Box::new(FixedArguments(arguments)));
 
         self.transaction.add_program_input(
-            with_sequence(
+            Self::with_sequence(
                 PartialInput::new(UTXO {
                     outpoint,
                     secrets: None,
@@ -538,6 +525,19 @@ impl TransactionBuilder {
 }
 
 impl TransactionBuilder {
+    /// Applies a manifest's declared sequence to an input, when it declared one.
+    ///
+    /// A sequence is a relative timelock: it says how long after the output it spends was
+    /// confirmed this transaction may enter a block. A covenant can require one, and a
+    /// transaction built without it is rejected by the chain rather than by anything here, so
+    /// dropping the declaration silently would fail late and unexplainably.
+    fn with_sequence(input: PartialInput, sequence: Option<u32>) -> PartialInput {
+        match sequence {
+            Some(value) => input.with_sequence(Sequence(value)),
+            None => input,
+        }
+    }
+
     /// The assembled transaction, for the signer in this crate.
     fn inner(&self) -> &FinalTransaction {
         &self.transaction

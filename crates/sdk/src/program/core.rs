@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use bitcoin_hashes::Hash;
 use dyn_clone::DynClone;
 
 use simplicityhl::ast::ElementsJetHinter;
@@ -76,7 +77,7 @@ pub trait ProgramTrait: DynClone {
     ) -> Result<Vec<Vec<u8>>, ProgramError>;
 }
 
-/// Represents a program structure containing its source, a public key, arguments, and associated storage.
+/// Represents a program structure containing its public key, compiled program, and associated storage.
 ///
 /// Abstraction giving the power to execute Simplicity contracts without specifying any additional parameters.
 #[derive(Clone)]
@@ -319,13 +320,28 @@ impl Program {
         Ok(self.load()?.commit().cmr().to_byte_array())
     }
 
+    /// Returns the 32-byte tapleaf hash of the program's Simplicity script.
+    ///
+    /// From upstream, and fallible here rather than infallible there: this fork compiles on
+    /// demand, so asking for the script can fail where upstream already held a compiled program.
+    ///
+    /// # Errors
+    /// Returns a `ProgramError` if compilation fails.
+    pub fn get_tapleaf_hash(&self) -> Result<[u8; 32], ProgramError> {
+        let (script, version) = self.script_version()?;
+
+        Ok(taproot::TapLeafHash::from_script(&script, version).to_byte_array())
+    }
+
     /// Retrieves program ABI metadata for argument types.
     ///
     /// # Errors
     /// Returns a `ProgramError` if compilation fails or generating ABI metadata fails.
     pub fn get_argument_types(&self) -> Result<Parameters, ProgramError> {
-        let compiled = self.load()?;
-        let abi_meta = compiled.generate_abi_meta().map_err(ProgramError::ProgramGenAbiMeta)?;
+        let abi_meta = self
+            .load()?
+            .generate_abi_meta()
+            .map_err(ProgramError::ProgramGenAbiMeta)?;
 
         Ok(abi_meta.param_types)
     }
@@ -335,8 +351,10 @@ impl Program {
     /// # Errors
     /// Returns a `ProgramError` if compilation fails or generating ABI metadata fails.
     pub fn get_witness_types(&self) -> Result<WitnessTypes, ProgramError> {
-        let compiled = self.load()?;
-        let abi_meta = compiled.generate_abi_meta().map_err(ProgramError::ProgramGenAbiMeta)?;
+        let abi_meta = self
+            .load()?
+            .generate_abi_meta()
+            .map_err(ProgramError::ProgramGenAbiMeta)?;
 
         Ok(abi_meta.witness_types)
     }

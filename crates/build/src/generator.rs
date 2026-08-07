@@ -265,9 +265,9 @@ impl ArtifactsGenerator {
                 pub const SOURCE: &'static str = #include_simf_module::#include_simf_source_const;
 
                 #[must_use]
-                pub fn new(arguments: impl ArgumentsTrait + 'static) -> Self {
+                pub fn new(arguments: &impl ArgumentsTrait) -> Self {
                     Self {
-                        program: Program::new(Self::SOURCE, Box::new(arguments)),
+                        program: Program::new(Self::SOURCE, arguments),
                     }
                 }
 
@@ -311,6 +311,11 @@ impl ArtifactsGenerator {
                 #[must_use]
                 pub fn get_script_hash(&self, network: &SimplicityNetwork) -> [u8; 32] {
                     self.program.get_script_hash(network)
+                }
+
+                #[must_use]
+                pub fn get_tapleaf_hash(&self) -> [u8; 32] {
+                    self.program.get_tapleaf_hash()
                 }
             }
 

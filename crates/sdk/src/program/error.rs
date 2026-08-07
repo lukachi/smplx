@@ -2,11 +2,6 @@
 #[derive(Debug, thiserror::Error)]
 pub enum ProgramError {
     /// Error thrown when compiling the raw Simplicity program source fails.
-    ///
-    /// Upstream has no such variant: it compiles in the constructor, so by the time a caller
-    /// holds a `Program` the compilation already succeeded. This fork compiles on demand,
-    /// because a wallet is handed contract text at runtime, so the failure has to be
-    /// expressible where it actually happens.
     #[error("Failed to compile Simplicity program: {0}")]
     Compilation(String),
 

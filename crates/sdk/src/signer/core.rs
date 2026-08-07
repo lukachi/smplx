@@ -80,7 +80,7 @@ pub trait SignerTrait {
 ///
 /// Without the `provider` feature the signer has no blockchain access: it can assemble,
 /// blind, sign and finalize a transaction it is handed, but it cannot discover UTXOs,
-/// look up a fee rate, or broadcast. A host that owns its own networking supplies those.
+/// look up a fee rate, or broadcast.
 pub struct Signer {
     mnemonic: Mnemonic,
     xprv: Xpriv,
@@ -156,22 +156,7 @@ impl Signer {
 
     /// Creates a `Signer` from a mnemonic and an explicit network, with no blockchain access.
     ///
-    /// This is the constructor a host with its own networking and its own key custody uses.
-    ///
-    /// # The mnemonic is the whole account secret
-    ///
-    /// Everything derivable from it — every key, for every purpose — lives inside this
-    /// object, not only the keys the signing path needs. That is wider than the operation
-    /// requires and is accepted deliberately rather than by oversight: signing derives from
-    /// a key at a fixed path while blinding derives from a SLIP77 master key, and an
-    /// extended private key alone does not carry the latter, so the alternatives are two
-    /// separate derived secrets or a callback interface that holds none.
-    ///
-    /// The trade-off, the two rejected alternatives, and the four conditions that would
-    /// reopen the choice are recorded under "Accepted debt: the account mnemonic crosses
-    /// into the wasm module" in the change record for this work. Narrow this before the
-    /// module gains a code path that outlives a single action, before a release intended
-    /// for people who are not us, or before a second consumer depends on it.
+    /// This is the constructor a host with its own networking and its own key custody should use.
     ///
     /// # Panics
     /// Panics if the mnemonic fails to parse, or if deriving the master private key fails.
@@ -252,7 +237,7 @@ impl Signer {
             let policy_amount_delta = fee_tx.calculate_fee_delta(&self.network);
 
             if policy_amount_delta >= curr_fee.cast_signed() {
-                match self.estimate_tx(fee_tx.clone(), fee_rate, policy_amount_delta.cast_unsigned(), None)? {
+                match self.estimate_tx(fee_tx.clone(), fee_rate, policy_amount_delta.cast_unsigned())? {
                     Estimate::Success(tx, fee) => {
                         ProgramLogger::flush_logs();
                         return Ok((tx, fee));
@@ -268,7 +253,7 @@ impl Signer {
         let policy_amount_delta = fee_tx.calculate_fee_delta(&self.network);
 
         if policy_amount_delta >= curr_fee.cast_signed() {
-            match self.estimate_tx(fee_tx.clone(), fee_rate, policy_amount_delta.cast_unsigned(), None)? {
+            match self.estimate_tx(fee_tx.clone(), fee_rate, policy_amount_delta.cast_unsigned())? {
                 Estimate::Success(tx, fee) => {
                     ProgramLogger::flush_logs();
                     return Ok((tx, fee));
@@ -285,7 +270,7 @@ impl Signer {
     ///
     /// # Errors
     /// Returns a `SignerError` if the assembled inputs do not meet dust limits or fail to cover the
-    ///  dynamically estimated required fee.
+    /// dynamically estimated required fee.
     pub fn finalize_strict(&self, tx: &FinalTransaction, fee_rate: f32) -> Result<(Transaction, u64), SignerError> {
         let policy_amount_delta = tx.calculate_fee_delta(&self.network);
 
@@ -294,7 +279,7 @@ impl Signer {
         }
 
         // policy_amount_delta will be > 0
-        match self.estimate_tx(tx.clone(), fee_rate, policy_amount_delta.cast_unsigned(), tx.change())? {
+        match self.estimate_tx(tx.clone(), fee_rate, policy_amount_delta.cast_unsigned())? {
             Estimate::Success(tx, fee) => {
                 ProgramLogger::flush_logs();
                 Ok((tx, fee))
@@ -306,9 +291,7 @@ impl Signer {
     /// Returns a reference to the active configured network provider.
     ///
     /// # Errors
-    /// Returns `ProviderUnavailable` when the signer was built without one. It used to panic
-    /// here instead, behind a second private accessor that returned the error and was then
-    /// unwrapped — one function written twice, with the honest half unreachable.
+    /// Returns `ProviderUnavailable` when the signer was built without one.
     #[cfg(feature = "provider")]
     pub fn get_provider(&self) -> Result<&dyn ProviderTrait, SignerError> {
         self.provider.as_deref().ok_or(SignerError::ProviderUnavailable)
@@ -325,7 +308,7 @@ impl Signer {
                 .map_err(|e| SignerError::Slip77Descriptor(e.to_string()))
                 .unwrap();
 
-        // confidential descriptor doesn't support multipath
+        // Confidential descriptor doesn't support multipath
         descriptor.descriptor = descriptor.descriptor.into_single_descriptors().unwrap()[0].clone();
 
         descriptor
@@ -446,11 +429,7 @@ impl Signer {
         self.get_private_key_at(None)
     }
 
-    /// Derives the signing key at a path relative to the account path.
-    ///
-    /// `None` keeps the historical default of `0/0`. A wallet whose UTXOs sit across many
-    /// derivation indices passes the path of the input being signed; without it every
-    /// signature is made with the key at one address and the rest are unspendable.
+    /// Derives the signing key at a path relative to the account path. `None` defaults to `0/0`.
     ///
     /// # Panics
     /// Panics if the master private key or derivation path cannot be derived.
@@ -514,13 +493,10 @@ impl Signer {
         &self,
         mut fee_tx: FinalTransaction,
         fee_rate: f32,
-        available_delta: u64,
-        change: Option<&ChangeOutput>,
+        available_delta: u64
     ) -> Result<Estimate, SignerError> {
-        // estimate the tx fee with the change
-        // the caller supplies the change target; falling back to this signer's own
-        // address is only correct for a wallet that watches exactly that address
-        let change = match change {
+        // Estimate the tx fee with the change. The caller supplies the change target
+        let change = match fee_tx.change() {
             Some(target) => target.clone(),
             None => {
                 ChangeOutput::new(self.get_address().script_pubkey()).with_blinding_key(self.get_blinding_public_key())
@@ -556,7 +532,7 @@ impl Signer {
             return Ok(Estimate::Success(final_tx, fee));
         }
 
-        // not enough funds, so we need to estimate without the change
+        // Not enough funds, so we need to estimate without the change
         // TODO: if a UTXO being spent is confidential + there are no
         // confidential outputs + there is no change, this will fail
         // with `RPC error -26: bad-txns-in-ne-out, value in != value out`.
@@ -572,10 +548,10 @@ impl Signer {
 
         let outputs = fee_tx.outputs_mut();
 
-        // change the fee output amount
+        // Change the fee output amount
         outputs[outputs.len() - 1].amount = available_delta;
 
-        // finalize the tx with fee and without the change
+        // Finalize the tx with fee and without the change
         let final_tx = self.sign_tx(&fee_tx)?;
 
         Ok(Estimate::Success(final_tx, fee))
@@ -613,10 +589,6 @@ impl Signer {
                     None => Ok(program_input.witness.build_witness()),
                 };
 
-                // `finalize` executes the program — satisfy, prune, BitMachine — so this is
-                // also the dry-run, performed against the witness actually produced. Its
-                // failure is attributed to the input it happened on, because a caller with
-                // several covenant inputs cannot act on "something did not execute".
                 let pruned_witness = program_input
                     .program
                     .finalize(&pst, &signed_witness.unwrap(), index, &self.network)

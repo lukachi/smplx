@@ -12,12 +12,6 @@ workspace = true
 
 [features]
 default = ["provider"]
-# Networking-backed provider backends: Esplora over HTTP and Elements over
-# JSON-RPC. Disabling this feature drops `minreq` and `bitcoincore-rpc`, which
-# do not build for `wasm32-unknown-unknown`, and leaves the pure parts of the
-# `provider` module — `ProviderTrait`, `ProviderError` and `SimplicityNetwork` —
-# in place. A wallet that owns its own networking builds with
-# `--no-default-features`.
 provider = ["dep:minreq", "dep:bitcoincore-rpc"]
 
 [dependencies]

@@ -161,11 +161,7 @@ impl FinalTransaction {
 
     /// Sets where this transaction's change should go.
     ///
-    /// A host that owns its own wallet derives change addresses itself; left unset, the signer
-    /// sends change to the single address it derives internally, which for a ranged-descriptor
-    /// wallet is an address it does not watch. It belongs to the transaction rather than to the
-    /// call that finalises it: it is a fact about this transaction, and passing it separately
-    /// meant every caller of `finalize_strict` had to remember it.
+    /// Left unset, the signer sends change to the single address it derives internally.
     pub fn add_change(&mut self, change: ChangeOutput) {
         self.change = Some(change);
     }
@@ -173,18 +169,6 @@ impl FinalTransaction {
     /// Drops the change target, returning to the signer's own address.
     pub fn remove_change(&mut self) {
         self.change = None;
-    }
-
-    /// Where this transaction's change should go, when the caller said.
-    #[must_use]
-    pub fn change(&self) -> Option<&ChangeOutput> {
-        self.change.as_ref()
-    }
-
-    /// Where this transaction's change should go, for a caller that needs to amend it.
-    #[must_use]
-    pub fn change_mut(&mut self) -> Option<&mut ChangeOutput> {
-        self.change.as_mut()
     }
 
     /// Adds a new input to the transaction.
@@ -291,6 +275,18 @@ impl FinalTransaction {
         }
 
         None
+    }
+
+    /// Where this transaction's change should go, when the caller said.
+    #[must_use]
+    pub fn change(&self) -> Option<&ChangeOutput> {
+        self.change.as_ref()
+    }
+
+    /// Where this transaction's change should go, for a caller that needs to amend it.
+    #[must_use]
+    pub fn change_mut(&mut self) -> Option<&mut ChangeOutput> {
+        self.change.as_mut()
     }
 
     /// Provides a slice reference to the collection of `FinalInput` elements.

@@ -9,8 +9,8 @@ use simplicityhl::elements::{Address, Script, Transaction, TxOut, taproot};
 use simplicityhl::simplicity::bitcoin::{XOnlyPublicKey, secp256k1};
 use simplicityhl::simplicity::jet::elements::{ElementsEnv, ElementsUtxo};
 use simplicityhl::simplicity::{BitMachine, RedeemNode, Value, leaf_version};
-use simplicityhl::{CompiledProgram, UnstableFeatures};
 use simplicityhl::{Arguments, Parameters, WitnessTypes, WitnessValues};
+use simplicityhl::{CompiledProgram, UnstableFeatures};
 
 use crate::global::GlobalConfig;
 use crate::program::logger::ProgramLogger;
@@ -78,41 +78,16 @@ pub trait ProgramTrait: DynClone {
 }
 
 /// Represents a program structure containing its public key, compiled program, and associated storage.
+/// A compiled program acts as a cache, instantiated during "loading".
 ///
 /// Abstraction giving the power to execute Simplicity contracts without specifying any additional parameters.
 #[derive(Clone)]
 pub struct Program {
     source: Arc<str>,
-    pub_key: XOnlyPublicKey,
-    /// The compile-time arguments, built once at construction rather than held as a trait
-    /// object and rebuilt.
-    ///
-    /// Upstream takes `&dyn ArgumentsTrait` and consumes it immediately, because it compiles
-    /// in the constructor. This fork compiles later, so it has to keep something — and keeping
-    /// the built value rather than the builder is what lets the signature stay upstream's:
-    /// a stored `Box<dyn ArgumentsTrait>` would have to outlive the call, forcing a `'static`
-    /// bound the code generator does not write.
     arguments: Arguments,
+    pub_key: XOnlyPublicKey,
     storage: Vec<Vec<u8>>,
-    /// Whether this program compiles with debug symbols, which changes its CMR.
-    ///
-    /// Per program rather than per process: a protocol declares the mode its contracts were
-    /// built in, and the wallet has to build each one the way its own protocol states or the
-    /// address it derives is not the address the funds sit at. A process-wide setting cannot
-    /// express that when one transaction touches two protocols.
     include_debug_symbols: Option<bool>,
-    /// The compiled program, kept once it has been built.
-    ///
-    /// Upstream compiles in the constructor and holds the result — `feat/sdk_program_optimization`,
-    /// and the reason is that one covenant costs several compilations otherwise: a control block
-    /// alone asks for the script twice, and the environment and the witness satisfaction ask
-    /// again. This fork cannot compile in the constructor, because the source arrives at runtime
-    /// and the build mode a protocol declares is set after it. So the compilation is deferred and
-    /// then kept, which is upstream's saving without upstream's requirement.
-    ///
-    /// Shared across clones on purpose: a clone has the same source, arguments and mode, so it
-    /// has the same compiled program. Anything that changes those replaces the cell rather than
-    /// writing through it.
     compiled: Arc<OnceLock<CompiledProgram>>,
 }
 
@@ -226,12 +201,6 @@ impl ProgramTrait for Program {
 
 impl Program {
     /// Creates a new instance of the struct with the provided source string and arguments.
-    ///
-    /// The source is taken by value rather than as a `&'static str`, so a program whose
-    /// text arrives at runtime is as ordinary as one baked in at compile time. The arguments
-    /// are taken by reference, which is upstream's shape rather than this fork's earlier
-    /// `Box`: the code generator emits a call written against upstream's signature, so
-    /// keeping our own made every generated artifact fail to compile.
     #[must_use]
     pub fn new(source: impl Into<Arc<str>>, arguments: &dyn ArgumentsTrait) -> Self {
         Self {
@@ -253,16 +222,11 @@ impl Program {
         self
     }
 
-    /// Builds this program in the mode its protocol declares, rather than the process's.
-    ///
-    /// The flag is not cosmetic: it wraps tracked expressions in extra Simplicity nodes, so
-    /// it changes the CMR and therefore the covenant address. Leaving it unset falls back to
-    /// the process-wide configuration, which is what a caller with no declaration to follow
-    /// should do.
+    /// Builds this program in the mode the protocol declares.
     #[must_use]
     pub fn with_debug_symbols(mut self, include: bool) -> Self {
         self.include_debug_symbols = Some(include);
-        // The mode decides the CMR, so a result compiled under the old one is not this program's.
+        // This changes the output CMR, so we need to update the cache
         self.compiled = Arc::new(OnceLock::new());
 
         self
@@ -337,27 +301,21 @@ impl Program {
     }
 
     /// Compiles the program and returns its Commitment Merkle Root.
-    ///
-    /// The CMR is what a covenant address is derived from, so recomputing it is how a
-    /// caller establishes for itself that a source is the one a deployed protocol used.
-    ///
-    /// # Errors
-    /// Returns a `ProgramError` if compilation fails.
-    pub fn get_cmr(&self) -> Result<[u8; 32], ProgramError> {
-        Ok(self.load()?.commit().cmr().to_byte_array())
+    /// 
+    /// # Panics
+    /// Panics if the SimplicityHL compilation fails.
+    pub fn get_cmr(&self) -> [u8; 32] {
+        self.load().unwrap().commit().cmr().to_byte_array()
     }
 
     /// Returns the 32-byte tapleaf hash of the program's Simplicity script.
-    ///
-    /// From upstream, and fallible here rather than infallible there: this fork compiles on
-    /// demand, so asking for the script can fail where upstream already held a compiled program.
-    ///
-    /// # Errors
-    /// Returns a `ProgramError` if compilation fails.
-    pub fn get_tapleaf_hash(&self) -> Result<[u8; 32], ProgramError> {
-        let (script, version) = self.script_version()?;
+    /// 
+    /// # Panics
+    /// Panics if the SimplicityHL compilation fails.
+    pub fn get_tapleaf_hash(&self) -> [u8; 32] {
+        let (script, version) = self.script_version().unwrap();
 
-        Ok(taproot::TapLeafHash::from_script(&script, version).to_byte_array())
+        taproot::TapLeafHash::from_script(&script, version).to_byte_array()
     }
 
     /// Retrieves program ABI metadata for argument types.
@@ -387,6 +345,7 @@ impl Program {
     }
 
     fn load(&self) -> Result<&CompiledProgram, ProgramError> {
+        // Check cache first
         if let Some(compiled) = self.compiled.get() {
             return Ok(compiled);
         }
@@ -401,6 +360,7 @@ impl Program {
         )
         .map_err(ProgramError::Compilation)?;
 
+        // Update the cache
         Ok(self.compiled.get_or_init(|| compiled))
     }
 
@@ -415,12 +375,6 @@ impl Program {
     ///
     /// The tree is `tapbranch(tapbranch(tapbranch(cmr, e1), e2), e3)`: the program's own leaf
     /// and the first extra leaf sit deepest, and each further leaf is one level shallower.
-    ///
-    /// This was a balanced tree, which is what upstream builds and what nobody deploys. The
-    /// reference implementation folds left, and every covenant address in existence was
-    /// derived by it — so a balanced tree produces a well-formed address for a contract whose
-    /// funds sit somewhere else. The two agree up to three leaves and diverge from four, which
-    /// is why nothing noticed until a protocol carried three extra leaves.
     fn taproot_leaf_depths(total_leaves: usize) -> Vec<usize> {
         assert!(total_leaves > 0, "Taproot tree must contain at least one leaf");
 
@@ -495,35 +449,6 @@ mod tests {
         AssetId::from_slice(&[byte; 32]).unwrap()
     }
 
-    // Upstream compiles in the constructor and keeps the result, and that is a saving rather
-    // than a style: one covenant asks for the compiled program six to eight times — a control
-    // block alone asks twice, then the environment and the witness satisfaction ask again. This
-    // fork defers the compilation because the source arrives at runtime, so the saving has to be
-    // kept deliberately. A merge with upstream dropped it once by resolving in this fork's
-    // favour without asking what upstream's change was for; this is what makes that visible.
-    #[test]
-    fn compiles_once_and_keeps_it() {
-        let program = dummy_program();
-
-        let first = program.load().expect("the dummy program compiles");
-        let second = program.load().expect("the dummy program compiles");
-
-        assert!(std::ptr::eq(first, second), "the program was compiled twice");
-    }
-
-    // And a program asked to build differently is a different program, so the kept result must
-    // not survive the change: the mode decides the CMR and therefore the address.
-    #[test]
-    fn a_changed_build_mode_is_not_served_the_old_compilation() {
-        let plain = dummy_program();
-        let plain_cmr = plain.get_cmr().expect("compiles");
-
-        let debug = dummy_program().with_debug_symbols(true);
-        let debug_cmr = debug.get_cmr().expect("compiles");
-
-        assert_ne!(plain_cmr, debug_cmr, "the build mode did not reach the compiler");
-    }
-
     fn dummy_program() -> Program {
         Program::new(DUMMY_PROGRAM, &EmptyArguments)
     }
@@ -549,6 +474,27 @@ mod tests {
         pst.add_input(input);
 
         pst
+    }
+
+    #[test]
+    fn compiles_once_and_keeps_it() {
+        let program = dummy_program();
+
+        let first = program.load().expect("the dummy program compiles");
+        let second = program.load().expect("the dummy program compiles");
+
+        assert!(std::ptr::eq(first, second), "the program was compiled twice");
+    }
+
+    #[test]
+    fn changed_build_mode_is_not_served_the_old_compilation() {
+        let plain = dummy_program();
+        let plain_cmr = plain.get_cmr();
+
+        let debug = dummy_program().with_debug_symbols(true);
+        let debug_cmr = debug.get_cmr();
+
+        assert_ne!(plain_cmr, debug_cmr, "the build mode did not reach the compiler");
     }
 
     #[test]
@@ -582,16 +528,6 @@ mod tests {
         assert!(program.get_env(&pst, 1, &network).is_ok());
     }
 
-    // Upstream's `test_taproot_leaf_depths_known_values` stood here and asserted a balanced
-    // tree — [2, 2, 2, 2] at four leaves. This fork folds left, because every deployed covenant
-    // address was derived by the reference implementation, which folds left. So that test had
-    // been failing since the fold changed, and keeping it beside these would be two tests
-    // asserting opposite things about one function. It is replaced rather than deleted: what it
-    // was protecting — that the depths are pinned and cannot drift unnoticed — is what these do.
-    // The reference implementation folds the tap tree left, and every deployed covenant
-    // address was derived that way. These are the depths a left fold needs, in the order
-    // TaprootBuilder consumes them: the program's leaf and the first extra sit deepest, and
-    // each further extra leaf is one level shallower.
     #[test]
     fn left_folded_depths() {
         assert_eq!(Program::taproot_leaf_depths(1), vec![0]);

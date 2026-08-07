@@ -19,9 +19,7 @@ fn program_tapleaf_test(context: simplex::TestContext) -> anyhow::Result<()> {
     let mut ft = FinalTransaction::new();
 
     let witness = TapleafCheckWitness {
-        // Fallible here where upstream's is infallible: this SDK compiles a program on first
-        // use rather than in its constructor, so asking for the tapleaf hash is a compilation.
-        program_tapleaf_hash: tapleaf_check.get_tapleaf_hash()?,
+        program_tapleaf_hash: tapleaf_check.get_tapleaf_hash(),
     };
 
     ft.add_program_input(

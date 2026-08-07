@@ -27,19 +27,6 @@ use smplx_sdk::transaction::{
 
 use wasm_bindgen::prelude::*;
 
-/// Compile-time parameters for a contract, resolved before construction.
-///
-/// Held as an already-parsed `Arguments` so a malformed set is rejected when the caller
-/// supplies it, rather than at the moment a covenant address is being derived.
-#[derive(Clone)]
-struct FixedArguments(Arguments);
-
-impl ArgumentsTrait for FixedArguments {
-    fn build_arguments(&self) -> Arguments {
-        self.0.clone()
-    }
-}
-
 /// Resolves a network name to the SDK's network enum.
 fn network_from_str(network: &str) -> Result<SimplicityNetwork, JsError> {
     match network {
@@ -50,14 +37,30 @@ fn network_from_str(network: &str) -> Result<SimplicityNetwork, JsError> {
     }
 }
 
-/// A compiled SimplicityHL contract.
+/// Compile-time parameters for a contract, resolved before construction.
+#[derive(Clone)]
+struct FixedArguments(Arguments);
+
+impl ArgumentsTrait for FixedArguments {
+    fn build_arguments(&self) -> Arguments {
+        self.0.clone()
+    }
+}
+
+/// Witness values for a covenant input, resolved before the transaction is assembled.
 ///
-/// Holds the source rather than a compiled artifact the caller has to build first, so a
-/// contract whose text arrives at runtime is constructed like any other. The SDK compiles it
-/// on first use and keeps the result, so asking the same object for a CMR and for an address
-/// costs one compilation rather than several; anything that would change what compiles —
-/// today only the declared build mode — discards the kept result rather than writing through
-/// it.
+/// Held as parsed `WitnessValues` so a malformed set is rejected when the caller supplies
+/// it rather than in the middle of signing.
+#[derive(Clone)]
+struct FixedWitness(WitnessValues);
+
+impl WitnessTrait for FixedWitness {
+    fn build_witness(&self) -> WitnessValues {
+        self.0.clone()
+    }
+}
+
+/// A compiled SimplicityHL contract.
 #[wasm_bindgen]
 pub struct Contract {
     program: Program,
@@ -67,20 +70,13 @@ pub struct Contract {
 impl Contract {
     /// Creates a contract from SimplicityHL source text delivered at runtime.
     ///
-    /// `argumentsJson` carries the contract's compile-time parameters in SimplicityHL's
-    /// own `.args` shape — `{"NAME": {"value": "0x…", "type": "Pubkey"}}` — so the format
-    /// is the compiler's rather than one invented here. Pass `null` for a contract that
-    /// declares no parameters.
+    /// `argumentsJson` carries the contract's compile-time parameters.
     ///
-    /// Parameters participate in the covenant address, so supplying different ones for the
-    /// same source yields a different address. That is the mechanism the address check
-    /// relies on, not a caveat to it.
+    /// Shape: `{"NAME": {"value": "0x…", "type": "Pubkey"}}`.
+    /// Pass `null` for a contract that declares no parameters.
     ///
-    /// `extraLeavesJson` is a JSON array of hex strings, each an already-encoded taproot
-    /// leaf payload appended to the tree in declaration order. They are payloads rather than
-    /// programs and are added as hidden nodes, and their bytes are as much a part of the
-    /// address as the parameters are — which is why they arrive encoded rather than as values
-    /// this module would have to guess a representation for.
+    /// `extraLeavesJson` is a JSON array of hex strings, each an encoded taproot
+    /// leaf payload appended to the tree in declaration order.
     ///
     /// # Errors
     /// Returns an error if the arguments are not valid SimplicityHL argument JSON, or if the
@@ -122,20 +118,14 @@ impl Contract {
     }
 
     /// Compiles the contract and returns its Commitment Merkle Root as lowercase hex.
-    ///
-    /// # Errors
-    /// Returns an error if the source fails to compile.
     #[wasm_bindgen(js_name = commitmentMerkleRoot)]
-    pub fn commitment_merkle_root(&self) -> Result<String, JsError> {
-        let cmr = self.program.get_cmr().map_err(|e| JsError::new(&e.to_string()))?;
+    pub fn commitment_merkle_root(&self) -> String {
+        let cmr = self.program.get_cmr();
 
-        Ok(hex::encode(cmr))
+        hex::encode(cmr)
     }
 
     /// Compiles the contract and returns the scriptPubKey its funds sit behind, as hex.
-    ///
-    /// The address is for showing a person; this is for comparing against an output and for
-    /// building one, which is what the wallet actually does with it.
     ///
     /// # Errors
     /// Returns an error if the network name is unknown or the source fails to compile.
@@ -158,24 +148,7 @@ impl Contract {
     }
 }
 
-/// The wallet's signing key material, inside the module.
-///
-/// # This holds the whole account secret
-///
-/// It is constructed from an account mnemonic, so every key derivable from that account
-/// lives here for as long as the object does — wider than any single action needs. That
-/// is accepted debt, not an oversight: signing derives from a key at a fixed path while
-/// blinding derives from a SLIP77 master key that an extended private key does not carry,
-/// so the alternatives are two separate derived secrets or a callback interface holding
-/// none of them.
-///
-/// The cost, the two rejected alternatives, and the conditions that should reopen the
-/// choice are recorded under "Accepted debt: the account mnemonic crosses into the wasm
-/// module" in the change record for this work. Narrow it before this module gains a code
-/// path outliving a single action, before a release intended for people who are not us,
-/// or before a second consumer depends on it.
-///
-/// Call `free()` when the action is done rather than letting it sit in the wasm heap.
+/// The wallet's signer that understands how to work with Simplicity.
 #[wasm_bindgen]
 pub struct WalletSigner {
     signer: Signer,
@@ -215,9 +188,6 @@ impl WalletSigner {
     }
 
     /// The x-only public key used for Schnorr and taproot, as lowercase hex.
-    ///
-    /// This is what a covenant locking to "the wallet's key" is parameterised with, so it
-    /// is the value that goes into a manifest parameter naming the signer.
     #[wasm_bindgen(js_name = schnorrPublicKey)]
     #[must_use]
     pub fn schnorr_public_key(&self) -> String {
@@ -225,10 +195,6 @@ impl WalletSigner {
     }
 
     /// The compressed public key used for ordinary wallet inputs, as lowercase hex.
-    ///
-    /// The Schnorr key above is what a covenant is parameterised with; this is what the
-    /// signer proves for an ordinary input it spends, so a host that has to describe both
-    /// halves of what this signer can sign needs it too.
     #[wasm_bindgen(js_name = ecdsaPublicKey)]
     #[must_use]
     pub fn ecdsa_public_key(&self) -> String {
@@ -252,13 +218,7 @@ impl WalletSigner {
         hex::encode(self.signer.get_blinding_public_key().to_bytes())
     }
 
-    /// Blinds, signs and finalises an assembled transaction.
-    ///
-    /// The fee rate is supplied rather than discovered, because the module has no network.
-    /// Where the change goes is a fact about the transaction and is set on the builder;
-    /// unset, it returns to the signer's own address, which is only right for a wallet that
-    /// watches exactly that one. Coin selection is assumed done — this adds the change and
-    /// fee outputs and nothing else.
+    /// Blinds, signs and finalizes an assembled transaction.
     ///
     /// # Errors
     /// Returns an error if the transaction cannot be balanced, blinded, signed or finalised.
@@ -281,29 +241,13 @@ impl WalletSigner {
     }
 }
 
-/// Witness values for a covenant input, resolved before the transaction is assembled.
-///
-/// Held as parsed `WitnessValues` so a malformed set is rejected when the caller supplies
-/// it rather than in the middle of signing.
-#[derive(Clone)]
-struct FixedWitness(WitnessValues);
-
-impl WitnessTrait for FixedWitness {
-    fn build_witness(&self) -> WitnessValues {
-        self.0.clone()
-    }
-}
-
 /// A transaction under construction.
 ///
-/// Inputs cross as an outpoint plus the raw `TxOut` they spend; nothing secret crosses
-/// per input, because the signer already holds the SLIP77 material that unblinds the
-/// wallet's own confidential outputs.
+/// Inputs cross as an outpoint plus the raw `TxOut` they spend.
+/// Unblinding is done on the Signer side.
 ///
-/// Coin selection is the caller's — this assembles exactly what it is given and adds only
-/// the change and fee outputs. That is deliberate: the wallet knows which of its outputs
-/// it is willing to spend, and a module that selected for it would be choosing on its
-/// behalf.
+/// Coin selection is the caller's.
+/// This assembles exactly what it is given and adds only the change and fee outputs.
 #[wasm_bindgen]
 pub struct TransactionBuilder {
     transaction: FinalTransaction,
@@ -322,18 +266,12 @@ impl TransactionBuilder {
 
     /// Sets where this transaction's change should go.
     ///
-    /// Left unset, change returns to the signer's own derived address, which is right only
-    /// for a wallet that watches exactly that one. A wallet with a ranged descriptor has its
-    /// own change addresses and states one here.
+    /// Left unset, change returns to the signer's own derived address.
     ///
     /// # Errors
     /// Returns an error if the script or the blinding key cannot be parsed.
     #[wasm_bindgen(js_name = addChange)]
-    pub fn add_change(
-        &mut self,
-        script_pubkey_hex: &str,
-        blinding_key_hex: Option<String>,
-    ) -> Result<(), JsError> {
+    pub fn add_change(&mut self, script_pubkey_hex: &str, blinding_key_hex: Option<String>) -> Result<(), JsError> {
         let script = Script::from(
             hex::decode(script_pubkey_hex).map_err(|e| JsError::new(&format!("Invalid change script: {e}")))?,
         );
@@ -397,56 +335,17 @@ impl TransactionBuilder {
         Ok(())
     }
 
-    /// Adds an output paying `amount_sats` of `asset_hex` to `script_pubkey_hex`.
-    ///
-    /// A blinding key makes the output confidential. Covenant and OP_RETURN outputs are
-    /// always unblinded, because Simplicity's introspection jets cannot read a
-    /// confidential commitment.
-    ///
-    /// # Errors
-    /// Returns an error if the script, asset id or blinding key cannot be parsed.
-    #[wasm_bindgen(js_name = addOutput)]
-    pub fn add_output(
-        &mut self,
-        script_pubkey_hex: &str,
-        amount_sats: u64,
-        asset_hex: &str,
-        blinding_key_hex: Option<String>,
-    ) -> Result<(), JsError> {
-        let script =
-            Script::from(hex::decode(script_pubkey_hex).map_err(|e| JsError::new(&format!("Invalid script: {e}")))?);
-        let asset = AssetId::from_str(asset_hex).map_err(|e| JsError::new(&format!("Invalid asset id: {e}")))?;
-
-        let mut output = PartialOutput::new(script, amount_sats, asset);
-
-        if let Some(blinding_key) = blinding_key_hex.as_deref() {
-            let key =
-                PublicKey::from_str(blinding_key).map_err(|e| JsError::new(&format!("Invalid blinding key: {e}")))?;
-
-            output = output.with_blinding_key(key);
-        }
-
-        self.transaction.add_output(output);
-
-        Ok(())
-    }
-
     /// Adds a covenant input: an output locked by a Simplicity program, spent by satisfying it.
     ///
-    /// `witness_json` carries the witness values in SimplicityHL's own `.wit` shape. Passing
-    /// `null` leaves them unset, which is what a pre-approval dry-run wants: unsupplied
-    /// witnesses are zero-filled and pruned, so the program's shape can be checked without
-    /// producing a signature before anyone has agreed to one.
+    /// `witness_json` carries the witness values in SimplicityHL's own `.wit` shape.
+    /// Passing `null` leaves them unset.
     ///
     /// `signature_witness` names the witness the signer must fill with a Schnorr signature
-    /// over this transaction. Most covenants authenticate whoever spends them, and a witness
-    /// the caller cannot produce in advance is exactly the one the signer exists to make;
-    /// leaving this `null` says the program needs no signature, which is true of very few
-    /// real covenants and was previously the only thing this could say.
+    /// over this transaction.
+    /// Leaving this `null` says the program needs no signature.
     ///
     /// # Errors
-    /// Returns an error if the txid, the encoded output, the arguments or the witness cannot
-    /// be parsed.
+    /// Returns an error if the txid, the encoded output, the arguments or the witness cannot be parsed.
     #[wasm_bindgen(js_name = addContractInput)]
     pub fn add_contract_input(
         &mut self,
@@ -501,12 +400,42 @@ impl TransactionBuilder {
         Ok(())
     }
 
+    /// Adds an output paying `amount_sats` of `asset_hex` to `script_pubkey_hex`.
+    ///
+    /// A blinding key makes the output confidential. Covenant and OP_RETURN outputs are always unblinded.
+    ///
+    /// # Errors
+    /// Returns an error if the script, asset id or blinding key cannot be parsed.
+    #[wasm_bindgen(js_name = addOutput)]
+    pub fn add_output(
+        &mut self,
+        script_pubkey_hex: &str,
+        amount_sats: u64,
+        asset_hex: &str,
+        blinding_key_hex: Option<String>,
+    ) -> Result<(), JsError> {
+        let script =
+            Script::from(hex::decode(script_pubkey_hex).map_err(|e| JsError::new(&format!("Invalid script: {e}")))?);
+        let asset = AssetId::from_str(asset_hex).map_err(|e| JsError::new(&format!("Invalid asset id: {e}")))?;
+
+        let mut output = PartialOutput::new(script, amount_sats, asset);
+
+        if let Some(blinding_key) = blinding_key_hex.as_deref() {
+            let key =
+                PublicKey::from_str(blinding_key).map_err(|e| JsError::new(&format!("Invalid blinding key: {e}")))?;
+
+            output = output.with_blinding_key(key);
+        }
+
+        self.transaction.add_output(output);
+
+        Ok(())
+    }
+
     /// Runs the Simplicity program of one covenant input against this transaction.
     ///
     /// This is the dry-run: it satisfies the witness, prunes the branches the spend does not
-    /// take, and executes the result on a BitMachine. It proves the program runs against
-    /// *this* transaction — not that a signature the caller has not made yet will satisfy it,
-    /// which is a different claim and needs a second run after signing.
+    /// take, and executes the result on a BitMachine.
     ///
     /// # Errors
     /// Returns an error if the input is not a covenant input, or if the program fails to
@@ -546,16 +475,12 @@ impl TransactionBuilder {
     pub fn output_count(&self) -> usize {
         self.transaction.n_outputs()
     }
-}
 
-impl TransactionBuilder {
     /// Which signature a covenant input needs, from the name the caller gave it.
     ///
     /// A witness can sit at the top of an input's witness set or inside a structure, and the
     /// SDK distinguishes the two. The binding takes one string for both and splits it on `.`,
-    /// so `unlock` is the flat form and `spend.owner.sig` is the nested one — which keeps the
-    /// caller's side a name rather than a name plus a shape, and means the binding can express
-    /// everything the enum can rather than half of it.
+    /// so `unlock` is the flat form and `Left.Right.1`.
     ///
     /// A name that is empty or only separators asks for no signature, which is what a covenant
     /// that authenticates nothing wants.
@@ -579,12 +504,7 @@ impl TransactionBuilder {
         Ok(RequiredSignature::witness_with_path(name, path))
     }
 
-    /// Applies a manifest's declared sequence to an input, when it declared one.
-    ///
-    /// A sequence is a relative timelock: it says how long after the output it spends was
-    /// confirmed this transaction may enter a block. A covenant can require one, and a
-    /// transaction built without it is rejected by the chain rather than by anything here, so
-    /// dropping the declaration silently would fail late and unexplainably.
+    /// Applies a declared sequence to an input.
     fn with_sequence(input: PartialInput, sequence: Option<u32>) -> PartialInput {
         match sequence {
             Some(value) => input.with_sequence(Sequence(value)),

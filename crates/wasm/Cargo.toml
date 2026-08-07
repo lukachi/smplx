@@ -1,7 +1,7 @@
 [package]
 name = "smplx-wasm"
 version = "0.0.9"
-description = "WebAssembly bindings for the Simplex SDK"
+description = "WebAssembly bindings for the Simplex sdk"
 license.workspace = true
 edition.workspace = true
 repository = "https://github.com/BlockstreamResearch/smplx"
@@ -14,15 +14,12 @@ workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# Not `workspace = true`. Cargo refuses `default-features = false` on an inherited dependency
-# whose workspace declaration leaves defaults on, and moving the disable to the root would turn
-# the provider off for cli, regtest, simplex and test, all four of which need it. This crate is
-# the only one that must build without it, so it is the one that states the path.
 smplx-sdk = { workspace = true }
 simplicityhl = { workspace = true }
-elements-miniscript = { version = "0.4" }
+hex = { workspace = true }
+
 # Pinned exactly: wasm-bindgen refuses to run when the CLI and the crate disagree on the
 # bindgen schema, so this must match the `wasm-bindgen` binary used to generate bindings.
 wasm-bindgen = { version = "=0.2.100" }
-hex = { workspace = true }
+elements-miniscript = { version = "0.4" }
 serde_json = { version = "1.0" }

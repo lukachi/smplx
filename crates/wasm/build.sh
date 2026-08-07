@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
 # Builds the browser-loadable Simplex SDK package into crates/wasm/pkg.
 #
-# Uses wasm-pack rather than wasm-bindgen directly, for three reasons: it runs
-# wasm-opt (which more than halves the module), it emits the package.json a
-# `file:` dependency needs, and it resolves a wasm-bindgen matching the crate
-# instead of requiring the host's CLI to already match.
+# Uses wasm-pack instead of wasm-bindgen directly.
 #
 # Usage: crates/wasm/build.sh [bundler|nodejs|web]   (default: bundler)
 
@@ -21,9 +18,7 @@ if [ -z "${CC_wasm32_unknown_unknown:-}" ]; then
 	for candidate in /opt/homebrew/opt/llvm/bin/clang /usr/local/opt/llvm/bin/clang /usr/bin/clang; do
 		if [ -x "${candidate}" ] && "${candidate}" -print-targets 2>/dev/null | grep -q wasm32; then
 			export CC_wasm32_unknown_unknown="${candidate}"
-			# Beside the compiler on a Homebrew install; on a distribution it is usually
-			# versioned — llvm-ar-18 and so on — with no unversioned name, so PATH and then a
-			# versioned match are tried rather than assuming the neighbour exists.
+
 			candidate_ar="$(dirname "${candidate}")/llvm-ar"
 
 			if [ ! -x "${candidate_ar}" ]; then

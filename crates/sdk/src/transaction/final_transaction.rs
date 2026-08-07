@@ -148,31 +148,6 @@ pub struct FinalTransaction {
 }
 
 impl FinalTransaction {
-    /// Sets where this transaction's change should go.
-    ///
-    /// A host that owns its own wallet derives change addresses itself; left unset, the signer
-    /// sends change to the single address it derives internally, which for a ranged-descriptor
-    /// wallet is an address it does not watch. It belongs to the transaction rather than to the
-    /// call that finalises it: it is a fact about this transaction, and passing it separately
-    /// meant every caller of `finalize_strict` had to remember it.
-    #[must_use]
-    pub fn with_change(mut self, change: ChangeOutput) -> Self {
-        self.change = Some(change);
-
-        self
-    }
-
-    /// Sets where this transaction's change should go, in place.
-    pub fn set_change(&mut self, change: ChangeOutput) {
-        self.change = Some(change);
-    }
-
-    /// Where this transaction's change should go, when the caller said.
-    #[must_use]
-    pub fn change(&self) -> Option<&ChangeOutput> {
-        self.change.as_ref()
-    }
-
     /// Creates a new instance of the final transaction with default values.
     #[must_use]
     #[allow(clippy::new_without_default)]
@@ -182,6 +157,34 @@ impl FinalTransaction {
             outputs: Vec::new(),
             change: None,
         }
+    }
+
+    /// Sets where this transaction's change should go.
+    ///
+    /// A host that owns its own wallet derives change addresses itself; left unset, the signer
+    /// sends change to the single address it derives internally, which for a ranged-descriptor
+    /// wallet is an address it does not watch. It belongs to the transaction rather than to the
+    /// call that finalises it: it is a fact about this transaction, and passing it separately
+    /// meant every caller of `finalize_strict` had to remember it.
+    pub fn add_change(&mut self, change: ChangeOutput) {
+        self.change = Some(change);
+    }
+
+    /// Drops the change target, returning to the signer's own address.
+    pub fn remove_change(&mut self) {
+        self.change = None;
+    }
+
+    /// Where this transaction's change should go, when the caller said.
+    #[must_use]
+    pub fn change(&self) -> Option<&ChangeOutput> {
+        self.change.as_ref()
+    }
+
+    /// Where this transaction's change should go, for a caller that needs to amend it.
+    #[must_use]
+    pub fn change_mut(&mut self) -> Option<&mut ChangeOutput> {
+        self.change.as_mut()
     }
 
     /// Adds a new input to the transaction.

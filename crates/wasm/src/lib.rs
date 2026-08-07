@@ -150,7 +150,7 @@ impl Contract {
     ///
     /// # Errors
     /// Returns an error if the network name is unknown or the source fails to compile.
-    #[wasm_bindgen(js_name = covenantAddress)]
+    #[wasm_bindgen(js_name = contractAddress)]
     pub fn contract_address(&self, network: &str) -> Result<String, JsError> {
         let network = network_from_str(network)?;
 
@@ -254,37 +254,23 @@ impl WalletSigner {
 
     /// Blinds, signs and finalises an assembled transaction.
     ///
-    /// The fee rate and the change target are supplied rather than discovered: the module
-    /// has no network, and change must go to an address the wallet actually watches. Coin
-    /// selection is assumed done — this adds the change and fee outputs and nothing else.
+    /// The fee rate is supplied rather than discovered, because the module has no network.
+    /// Where the change goes is a fact about the transaction and is set on the builder;
+    /// unset, it returns to the signer's own address, which is only right for a wallet that
+    /// watches exactly that one. Coin selection is assumed done — this adds the change and
+    /// fee outputs and nothing else.
     ///
     /// # Errors
-    /// Returns an error if the change target cannot be parsed, or if the transaction
-    /// cannot be balanced, blinded, signed or finalised.
+    /// Returns an error if the transaction cannot be balanced, blinded, signed or finalised.
     #[wasm_bindgen(js_name = finalizeTransaction)]
     pub fn finalize_transaction(
         &self,
         builder: &TransactionBuilder,
         fee_rate: f32,
-        change_script_pubkey_hex: &str,
-        change_blinding_key_hex: Option<String>,
     ) -> Result<SignedTransaction, JsError> {
-        let script = Script::from(
-            hex::decode(change_script_pubkey_hex).map_err(|e| JsError::new(&format!("Invalid change script: {e}")))?,
-        );
-
-        let mut change = ChangeOutput::new(script);
-
-        if let Some(blinding_key) = change_blinding_key_hex.as_deref() {
-            let key = PublicKey::from_str(blinding_key)
-                .map_err(|e| JsError::new(&format!("Invalid change blinding key: {e}")))?;
-
-            change = change.with_blinding_key(key);
-        }
-
         let (transaction, fee_sats) = self
             .signer
-            .finalize_strict(&builder.inner().clone().with_change(change), fee_rate)
+            .finalize_strict(builder.inner(), fee_rate)
             .map_err(|e| JsError::new(&format!("Could not finalise the transaction: {e}")))?;
 
         Ok(SignedTransaction {
@@ -332,6 +318,44 @@ impl TransactionBuilder {
         Self {
             transaction: FinalTransaction::new(),
         }
+    }
+
+    /// Sets where this transaction's change should go.
+    ///
+    /// Left unset, change returns to the signer's own derived address, which is right only
+    /// for a wallet that watches exactly that one. A wallet with a ranged descriptor has its
+    /// own change addresses and states one here.
+    ///
+    /// # Errors
+    /// Returns an error if the script or the blinding key cannot be parsed.
+    #[wasm_bindgen(js_name = addChange)]
+    pub fn add_change(
+        &mut self,
+        script_pubkey_hex: &str,
+        blinding_key_hex: Option<String>,
+    ) -> Result<(), JsError> {
+        let script = Script::from(
+            hex::decode(script_pubkey_hex).map_err(|e| JsError::new(&format!("Invalid change script: {e}")))?,
+        );
+
+        let mut change = ChangeOutput::new(script);
+
+        if let Some(blinding_key) = blinding_key_hex.as_deref() {
+            let key = PublicKey::from_str(blinding_key)
+                .map_err(|e| JsError::new(&format!("Invalid change blinding key: {e}")))?;
+
+            change = change.with_blinding_key(key);
+        }
+
+        self.transaction.add_change(change);
+
+        Ok(())
+    }
+
+    /// Drops the change target, returning to the signer's own address.
+    #[wasm_bindgen(js_name = removeChange)]
+    pub fn remove_change(&mut self) {
+        self.transaction.remove_change();
     }
 
     /// Adds an ordinary wallet input, spending the output at `txid:vout`.
@@ -423,7 +447,7 @@ impl TransactionBuilder {
     /// # Errors
     /// Returns an error if the txid, the encoded output, the arguments or the witness cannot
     /// be parsed.
-    #[wasm_bindgen(js_name = addCovenantInput)]
+    #[wasm_bindgen(js_name = addContractInput)]
     pub fn add_contract_input(
         &mut self,
         txid: &str,
@@ -487,7 +511,7 @@ impl TransactionBuilder {
     /// # Errors
     /// Returns an error if the input is not a covenant input, or if the program fails to
     /// satisfy, prune or execute.
-    #[wasm_bindgen(js_name = dryRunCovenantInput)]
+    #[wasm_bindgen(js_name = dryRunContractInput)]
     pub fn dry_run_contract_input(&self, input_index: usize, network: &str) -> Result<(), JsError> {
         let network = network_from_str(network)?;
         let inputs = self.transaction.inputs();
@@ -617,16 +641,4 @@ impl SignedTransaction {
 #[must_use]
 pub fn sdk_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
-}
-
-/// The SimplicityHL compiler version compiled into this module.
-///
-/// Read from the dependency at build time rather than written down, because a wallet that
-/// refuses a manifest asking for another version has to be right about which one it has.
-/// A constant maintained by hand would drift from the compiler on the first upgrade, and
-/// the failure would be a refusal of a manifest that should have built.
-#[wasm_bindgen(js_name = compilerVersion)]
-#[must_use]
-pub fn compiler_version() -> String {
-    smplx_sdk::COMPILER_VERSION.to_string()
 }

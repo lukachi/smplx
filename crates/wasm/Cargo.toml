@@ -18,7 +18,7 @@ crate-type = ["cdylib", "rlib"]
 # whose workspace declaration leaves defaults on, and moving the disable to the root would turn
 # the provider off for cli, regtest, simplex and test, all four of which need it. This crate is
 # the only one that must build without it, so it is the one that states the path.
-smplx-sdk = { path = "../sdk", version = "0.0.9", default-features = false }
+smplx-sdk = { workspace = true }
 simplicityhl = { workspace = true }
 elements-miniscript = { version = "0.4" }
 # Pinned exactly: wasm-bindgen refuses to run when the CLI and the crate disagree on the
